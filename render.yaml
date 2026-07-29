@@ -1,0 +1,20 @@
+# Render blueprint. Push this repo to GitHub, then in Render choose
+# "New +" -> "Blueprint" and point it at the repo.
+services:
+  - type: web
+    name: surfaced
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: "echo 'no build step: standard library only'"
+    startCommand: "python3 server.py"
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"
+      - key: SURFACED_RATE_LIMIT
+        value: "12"
+      # Set this to your live URL after the first deploy, e.g.
+      # https://surfaced.onrender.com  — it drives canonical and OG tags.
+      - key: SURFACED_BASE_URL
+        sync: false

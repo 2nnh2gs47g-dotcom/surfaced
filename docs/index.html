@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Surfaced — AI visibility check</title>
+<meta name="description" content="Check whether ChatGPT, Claude, Gemini and Perplexity can reach, read and quote your website. Free, no signup.">
+<meta name="author" content="Surfaced">
+<meta property="og:title" content="Surfaced — AI visibility check">
+<meta property="og:description" content="Check whether AI assistants can find, trust and quote your website.">
+<meta property="og:type" content="website">
+<style>
+  :root {
+    --void:#14112e; --violet:#a78bfa; --cyan:#67e8f9; --paper:#f7f6fc;
+    --muted:#b6b2d8; --line:#ffffff1f;
+    --mono: ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans: "Avenir Next","Segoe UI",system-ui,-apple-system,sans-serif;
+  }
+  * { box-sizing:border-box; margin:0; }
+  body {
+    font:16px/1.65 var(--sans); color:var(--paper); background:var(--void);
+    background-image:
+      radial-gradient(900px 620px at 78% -12%, #4f46e5 0%, transparent 58%),
+      radial-gradient(760px 520px at -8% 108%, #0e7490 0%, transparent 55%);
+    background-attachment:fixed; min-height:100vh;
+  }
+  .wrap { max-width:760px; margin:0 auto; padding:72px 24px 80px; }
+  .eyebrow { font:600 12px/1 var(--mono); letter-spacing:.24em; text-transform:uppercase;
+    color:var(--cyan); margin-bottom:18px; }
+  h1 { font-size:clamp(30px,5vw,46px); line-height:1.1; letter-spacing:-.022em; margin-bottom:16px; }
+  h1 em { font-style:normal; color:var(--cyan); }
+  .lede { color:var(--muted); font-size:18px; max-width:50ch; }
+  form { display:flex; gap:10px; margin-top:32px; background:#ffffff12;
+    border:1px solid var(--line); border-radius:15px; padding:9px; }
+  form:focus-within { border-color:#ffffff44; }
+  input { flex:1; min-width:0; background:transparent; border:none; outline:none;
+    color:var(--paper); font:17px var(--sans); padding:11px 13px; }
+  input::placeholder { color:#8d89b3; }
+  button { border:none; border-radius:10px; padding:12px 22px; cursor:pointer;
+    font:700 15px var(--sans); color:var(--void);
+    background:linear-gradient(96deg,var(--violet),var(--cyan)); }
+  button:hover { filter:brightness(1.08); }
+  button:disabled { opacity:.55; cursor:progress; }
+  .note { margin-top:14px; font:13px var(--mono); color:#8d89b3; }
+  #out { margin-top:38px; }
+  .rings { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); }
+  .ring { border:1px solid var(--line); border-radius:14px; padding:18px; background:#ffffff08; text-align:center; }
+  .ring b { display:block; font-size:38px; line-height:1; font-weight:700; }
+  .ring span { font:600 11px var(--mono); letter-spacing:.16em; text-transform:uppercase;
+    color:var(--muted); display:block; margin-top:8px; }
+  .summary { color:var(--muted); margin-top:20px; }
+  h2 { font-size:20px; margin:34px 0 12px; }
+  ol.fixes { padding-left:0; list-style:none; counter-reset:fix; }
+  ol.fixes li { position:relative; padding:0 0 20px 44px; counter-increment:fix; color:var(--muted); }
+  ol.fixes li::before { content:counter(fix,decimal-leading-zero); position:absolute; left:0; top:2px;
+    font:700 13px var(--mono); color:var(--violet); }
+  ol.fixes strong { color:var(--paper); display:block; font-weight:600; }
+  .tag { font:600 10px var(--mono); letter-spacing:.1em; text-transform:uppercase;
+    border:1px solid; border-radius:99px; padding:2px 9px; margin-left:8px; }
+  .High { color:#fb7185; border-color:#fb718555; }
+  .Medium { color:#fbbf24; border-color:#fbbf2455; }
+  .Low { color:#94a3b8; border-color:#94a3b855; }
+  .msg { border:1px solid var(--line); border-radius:12px; padding:16px 18px; color:var(--muted); }
+  a { color:var(--cyan); }
+  footer { margin-top:56px; padding-top:26px; border-top:1px solid var(--line);
+    font-size:14px; color:#8d89b3; }
+  :focus-visible { outline:2px solid var(--cyan); outline-offset:3px; border-radius:4px; }
+  @media (max-width:600px) { form { flex-direction:column; } button { width:100%; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow">AI visibility check</p>
+  <h1>Will AI assistants find, trust and <em>quote</em> your website?</h1>
+  <p class="lede">Paste any public address. Surfaced reads it the way a crawler does,
+  scores what it finds, and tells you what to fix first.</p>
+
+  <form id="scanForm">
+    <label for="url" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Website address</label>
+    <input id="url" name="url" type="text" placeholder="yourwebsite.com" required autocomplete="url">
+    <button id="go" type="submit">Run the check</button>
+  </form>
+  <p class="note">Free &middot; no signup &middot; about 10 seconds</p>
+
+  <div id="out"></div>
+
+  <footer>
+    <p>This page is hosted on GitHub Pages and calls the Surfaced API.
+    <a href="/robots.txt">robots.txt</a></p>
+  </footer>
+</div>
+
+<script>
+  // ---------------------------------------------------------------------
+  // Point this at your deployed Surfaced service (no trailing slash).
+  // Example: "https://surfaced.onrender.com"
+  // ---------------------------------------------------------------------
+  const API_BASE = "https://surfaced.onrender.com";
+
+  const form = document.getElementById("scanForm");
+  const out  = document.getElementById("out");
+  const go   = document.getElementById("go");
+  const esc  = s => String(s).replace(/[&<>"]/g, c =>
+    ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+
+  form.addEventListener("submit", async e => {
+    e.preventDefault();
+    const url = document.getElementById("url").value.trim();
+    if (!url) return;
+
+    go.disabled = true;
+    go.textContent = "Checking…";
+    out.innerHTML = '<p class="msg">Fetching the page the way an AI crawler would. ' +
+                    'The first request after a quiet spell can take up to a minute ' +
+                    'while the server wakes up.</p>';
+
+    try {
+      const res  = await fetch(`${API_BASE}/api/scan?url=${encodeURIComponent(url)}`);
+      const data = await res.json();
+
+      if (!res.ok) {
+        out.innerHTML = `<p class="msg">${esc(data.error || "That page couldn't be checked.")}</p>`;
+        return;
+      }
+
+      const s = data.scores;
+      const rings = [
+        ["overall", s.overall], ["GEO", s.geo], ["AEO", s.aeo],
+        ["reviews", s.reviews], ["social", s.social]
+      ].map(([label, value]) =>
+        `<div class="ring"><b>${value}</b><span>${label}</span></div>`).join("");
+
+      const fixes = (data.recommendations || []).slice(0, 5).map(r =>
+        `<li><strong>${esc(r.label)}<span class="tag ${esc(r.priority)}">${esc(r.priority)}</span></strong>
+         ${esc(r.fix)}</li>`).join("");
+
+      out.innerHTML = `
+        <div class="rings">${rings}</div>
+        <p class="summary">${esc(data.summary)}</p>
+        ${fixes ? `<h2>Fix these first</h2><ol class="fixes">${fixes}</ol>` : ""}
+        <p class="note">Checked ${esc(data.url)} · ${data.word_count.toLocaleString()} words visible to crawlers</p>`;
+    } catch (err) {
+      out.innerHTML = '<p class="msg">Couldn\'t reach the scanner. Check that API_BASE ' +
+                      'in this page points at your deployed service, then try again.</p>';
+    } finally {
+      go.disabled = false;
+      go.textContent = "Run the check";
+    }
+  });
+</script>
+</body>
+</html>

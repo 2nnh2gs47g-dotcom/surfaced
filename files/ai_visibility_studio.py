@@ -1,0 +1,950 @@
+#!/usr/bin/env python3
+"""
+AI Visibility Studio — GEO / AEO checker
+========================================
+One file. No installs. Python 3.9+ standard library only.
+
+WHAT IT DOES (plain English)
+  1. You run this file. It opens a small website on YOUR computer only.
+  2. You paste in any URL and press "Run check".
+  3. It downloads that page the same way an AI crawler would (no JavaScript),
+     inspects it, and gives two scores:
+        GEO  = Generative Engine Optimization  -> "Can AI systems access,
+               read and trust this page enough to use it in answers?"
+        AEO  = Answer Engine Optimization      -> "Is the content shaped
+               like answers, so an AI can quote it directly?"
+  4. It writes a designed, self-contained HTML report (summary + scores +
+     prioritized recommendations) into a `reports/` folder next to this file,
+     and shows it in your browser.
+
+HOW TO RUN (Mac Terminal)
+  cd <folder containing this file>
+  python3 ai_visibility_studio.py
+  ... then open the address it prints (usually http://localhost:8765)
+
+ALTERNATIVE: one-off check from the command line, no browser UI:
+  python3 ai_visibility_studio.py https://example.com
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import gzip
+import html as _html
+import io
+import json
+import os
+import re
+import socket
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+from dataclasses import dataclass, field
+from html.parser import HTMLParser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# ---------------------------------------------------------------------------
+# 1. WHO ARE THE AI CRAWLERS?
+#    Citation bots fetch pages to ANSWER user questions (this drives traffic
+#    and mentions). Training bots only collect data for model training.
+#    Blocking citation bots is the single most damaging GEO mistake.
+# ---------------------------------------------------------------------------
+
+CITATION_BOTS = [
+    ("OAI-SearchBot", "ChatGPT search index"),
+    ("ChatGPT-User", "ChatGPT live browsing for a user"),
+    ("Claude-SearchBot", "Claude search index"),
+    ("Claude-User", "Claude live browsing for a user"),
+    ("PerplexityBot", "Perplexity search index"),
+    ("Perplexity-User", "Perplexity live browsing for a user"),
+]
+
+TRAINING_BOTS = [
+    ("GPTBot", "OpenAI model training"),
+    ("ClaudeBot", "Anthropic model training"),
+    ("Google-Extended", "Gemini training & grounding"),
+    ("CCBot", "Common Crawl (feeds many models)"),
+    ("Applebot-Extended", "Apple Intelligence training"),
+]
+
+REQUEST_UA = (
+    "Mozilla/5.0 (compatible; AIVisibilityStudio/1.0; personal diagnostic tool)"
+)
+
+# ---------------------------------------------------------------------------
+# 2. FETCHING — download a page the way a crawler does (raw HTML, no JS)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Fetched:
+    ok: bool
+    url: str
+    final_url: str = ""
+    status: int = 0
+    body: str = ""
+    error: str = ""
+    https: bool = False
+
+
+def fetch(url: str, timeout: int = 20) -> Fetched:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": REQUEST_UA,
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+            "Accept-Encoding": "gzip",
+            "Accept-Language": "en-US,en;q=0.8",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read(4_000_000)  # cap at ~4 MB
+            if resp.headers.get("Content-Encoding", "") == "gzip":
+                try:
+                    raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
+                except OSError:
+                    pass
+            charset = resp.headers.get_content_charset() or "utf-8"
+            body = raw.decode(charset, errors="replace")
+            final = resp.geturl()
+            return Fetched(
+                ok=True,
+                url=url,
+                final_url=final,
+                status=resp.status,
+                body=body,
+                https=final.startswith("https://"),
+            )
+    except urllib.error.HTTPError as e:
+        return Fetched(ok=False, url=url, status=e.code, error=f"HTTP {e.code} {e.reason}")
+    except Exception as e:  # noqa: BLE001 — show any failure to the user plainly
+        return Fetched(ok=False, url=url, error=str(e))
+
+
+# ---------------------------------------------------------------------------
+# 3. ROBOTS.TXT — which AI crawlers are allowed in?
+# ---------------------------------------------------------------------------
+
+
+def parse_robots(text: str) -> list[dict]:
+    """Return [{'agents': [...], 'disallow': [...], 'allow': [...]}] groups."""
+    groups: list[dict] = []
+    current: dict | None = None
+    last_was_agent = False
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line or ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        key, val = key.strip().lower(), val.strip()
+        if key == "user-agent":
+            if current is None or not last_was_agent:
+                current = {"agents": [], "disallow": [], "allow": []}
+                groups.append(current)
+            current["agents"].append(val.lower())
+            last_was_agent = True
+        elif key in ("disallow", "allow") and current is not None:
+            current[key].append(val)
+            last_was_agent = False
+        else:
+            last_was_agent = False
+    return groups
+
+
+def bot_access(groups: list[dict], bot: str) -> str:
+    """'allowed' | 'blocked' | 'partial' for the site root, for one bot."""
+    bot_l = bot.lower()
+    matched = None
+    for g in groups:
+        if any(a == bot_l for a in g["agents"]):
+            matched = g
+            break
+    if matched is None:
+        for g in groups:
+            if "*" in g["agents"]:
+                matched = g
+                break
+    if matched is None:
+        return "allowed"
+    dis = [d for d in matched["disallow"] if d]
+    if any(d.strip() == "/" for d in dis):
+        # A blanket Disallow: / — unless an explicit Allow: / overrides it
+        if any(a.strip() == "/" for a in matched["allow"]):
+            return "allowed"
+        return "blocked"
+    if dis:
+        return "partial"
+    return "allowed"
+
+
+# ---------------------------------------------------------------------------
+# 4. HTML ANALYSIS — read the page like an AI would
+# ---------------------------------------------------------------------------
+
+SKIP_TAGS = {"script", "style", "noscript", "template", "svg", "head"}
+QUESTION_WORDS = ("what", "why", "how", "when", "where", "who", "which", "can", "do", "does", "is", "are", "should")
+
+
+class PageParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.skip_depth = 0
+        self.in_title = False
+        self.heading_level = 0
+        self.heading_buf: list[str] = []
+        self.in_p = False
+        self.p_buf: list[str] = []
+
+        self.title = ""
+        self.meta: dict[str, str] = {}
+        self.canonical = ""
+        self.headings: list[tuple[int, str]] = []
+        self.paragraphs: list[str] = []
+        self.text_chunks: list[str] = []
+        self.jsonld_raw: list[str] = []
+        self._in_jsonld = False
+        self.lists = 0
+        self.tables = 0
+        self.imgs = 0
+        self.imgs_with_alt = 0
+        self.links_internal = 0
+        self.links_external = 0
+        self.time_tags = 0
+        self.base_host = ""
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "script":
+            if (a.get("type") or "").lower().strip() == "application/ld+json":
+                self._in_jsonld = True
+                self.jsonld_raw.append("")
+            self.skip_depth += 1
+            return
+        if tag in SKIP_TAGS:
+            self.skip_depth += 1
+            return
+        if tag == "title":
+            self.in_title = True
+        elif tag == "meta":
+            name = (a.get("name") or a.get("property") or "").lower()
+            if name and a.get("content"):
+                self.meta.setdefault(name, a["content"])
+        elif tag == "link" and (a.get("rel") or "").lower() == "canonical":
+            self.canonical = a.get("href", "")
+        elif tag in ("h1", "h2", "h3", "h4"):
+            self.heading_level = int(tag[1])
+            self.heading_buf = []
+        elif tag == "p":
+            self.in_p = True
+            self.p_buf = []
+        elif tag in ("ul", "ol"):
+            self.lists += 1
+        elif tag == "table":
+            self.tables += 1
+        elif tag == "time":
+            self.time_tags += 1
+        elif tag == "img":
+            self.imgs += 1
+            if (a.get("alt") or "").strip():
+                self.imgs_with_alt += 1
+        elif tag == "a":
+            href = a.get("href", "")
+            if href.startswith(("http://", "https://")):
+                host = urllib.parse.urlparse(href).netloc.lower()
+                if self.base_host and host.endswith(self.base_host):
+                    self.links_internal += 1
+                else:
+                    self.links_external += 1
+            elif href and not href.startswith(("#", "mailto:", "javascript:", "tel:")):
+                self.links_internal += 1
+
+    def handle_endtag(self, tag):
+        if tag in SKIP_TAGS:
+            if tag == "script":
+                self._in_jsonld = False
+            self.skip_depth = max(0, self.skip_depth - 1)
+            return
+        if tag == "title":
+            self.in_title = False
+        elif tag in ("h1", "h2", "h3", "h4") and self.heading_level:
+            text = " ".join("".join(self.heading_buf).split())
+            if text:
+                self.headings.append((self.heading_level, text))
+            self.heading_level = 0
+        elif tag == "p" and self.in_p:
+            text = " ".join("".join(self.p_buf).split())
+            if text:
+                self.paragraphs.append(text)
+            self.in_p = False
+
+    def handle_data(self, data):
+        if self._in_jsonld and self.jsonld_raw:
+            self.jsonld_raw[-1] += data
+            return
+        if self.skip_depth:
+            return
+        if self.in_title:
+            self.title += data
+        if self.heading_level:
+            self.heading_buf.append(data)
+        if self.in_p:
+            self.p_buf.append(data)
+        if data.strip():
+            self.text_chunks.append(data.strip())
+
+
+def extract_jsonld_types(raw_blocks: list[str]) -> list[str]:
+    types: list[str] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            t = node.get("@type")
+            if isinstance(t, str):
+                types.append(t)
+            elif isinstance(t, list):
+                types.extend(x for x in t if isinstance(x, str))
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    for block in raw_blocks:
+        block = block.strip()
+        if not block:
+            continue
+        try:
+            walk(json.loads(block))
+        except json.JSONDecodeError:
+            continue
+    return types
+
+
+# ---------------------------------------------------------------------------
+# 5. SCORING — turn observations into GEO and AEO scores + recommendations
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Check:
+    pillar: str          # which pillar this belongs to
+    label: str           # short name shown in the report
+    earned: float        # points earned
+    possible: float      # max points
+    detail: str          # plain-English one-liner of what we saw
+    fix: str = ""        # plain-English fix if points were lost
+    priority: str = ""   # High / Medium / Low (only when fix needed)
+
+
+@dataclass
+class Result:
+    url: str
+    final_url: str
+    fetched_at: str
+    site_title: str
+    geo_score: int = 0
+    aeo_score: int = 0
+    checks: list[Check] = field(default_factory=list)
+    crawler_rows: list[tuple[str, str, str, str]] = field(default_factory=list)
+    spa_warning: bool = False
+    word_count: int = 0
+    summary: str = ""
+
+
+def clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def analyze(url: str) -> Result | str:
+    """Run the full audit. Returns a Result, or an error string."""
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    page = fetch(url)
+    if not page.ok:
+        return f"Could not download {url} — {page.error or 'unknown error'}. Check the address and try again."
+
+    parsed = urllib.parse.urlparse(page.final_url)
+    host = parsed.netloc.lower()
+    p = PageParser()
+    p.base_host = host.removeprefix("www.")
+    try:
+        p.feed(page.body)
+    except Exception:
+        pass  # tolerate broken HTML; keep whatever was parsed
+
+    # robots.txt
+    robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+    robots = fetch(robots_url, timeout=10)
+    groups = parse_robots(robots.body) if robots.ok else []
+
+    res = Result(
+        url=url,
+        final_url=page.final_url,
+        fetched_at=_dt.datetime.now().strftime("%B %d, %Y at %H:%M"),
+        site_title=" ".join(p.title.split()) or host,
+    )
+    checks = res.checks
+
+    # ---------------- GEO pillar A: ACCESS (30 pts) ----------------
+    cite_allowed = cite_total = len(CITATION_BOTS)
+    cite_allowed = 0
+    for bot, role in CITATION_BOTS:
+        status = bot_access(groups, bot) if robots.ok else "allowed"
+        if status == "allowed":
+            cite_allowed += 1
+        res.crawler_rows.append((bot, role, "Citation", status))
+    for bot, role in TRAINING_BOTS:
+        status = bot_access(groups, bot) if robots.ok else "allowed"
+        res.crawler_rows.append((bot, role, "Training", status))
+
+    access_pts = 30 * (cite_allowed / cite_total)
+    blocked_bots = [r[0] for r in res.crawler_rows if r[2] == "Citation" and r[3] == "blocked"]
+    checks.append(Check(
+        "GEO · Access", "AI citation crawlers allowed",
+        round(access_pts, 1), 30,
+        (f"{cite_allowed} of {cite_total} citation crawlers can reach the site"
+         + (f" (robots.txt blocks: {', '.join(blocked_bots)})" if blocked_bots else "")
+         + ("" if robots.ok else " — no robots.txt found, so everything is allowed by default")),
+        fix=("Edit robots.txt so citation crawlers (OAI-SearchBot, ChatGPT-User, Claude-SearchBot, "
+             "Claude-User, PerplexityBot, Perplexity-User) are allowed. These fetch pages to answer "
+             "real user questions — blocking them removes the site from AI answers entirely. You can "
+             "still block training-only bots separately if you wish.") if blocked_bots else "",
+        priority="High" if blocked_bots else "",
+    ))
+
+    https_pts = 5 if page.https else 0
+    checks.append(Check(
+        "GEO · Access", "Served over HTTPS", https_pts, 5,
+        "Page is served over HTTPS" if page.https else "Page is not on HTTPS",
+        fix="" if page.https else "Install an SSL certificate; AI engines deprioritize non-HTTPS sources.",
+        priority="" if page.https else "High",
+    ))
+
+    # ---------------- GEO pillar B: MACHINE-READABLE CONTENT (30 pts) -------
+    words = sum(len(c.split()) for c in p.text_chunks)
+    res.word_count = words
+    word_pts = clamp((words / 600) * 20, 0, 20)
+    spa = words < 120 and ("id=\"root\"" in page.body or "id=\"app\"" in page.body or page.body.count("<script") >= 8)
+    res.spa_warning = spa
+    checks.append(Check(
+        "GEO · Content", "Readable text without JavaScript",
+        round(word_pts, 1), 20,
+        f"{words} words of visible text in the raw HTML"
+        + (" — this looks like a JavaScript-rendered app; crawlers that don't run JS may see almost nothing" if spa else ""),
+        fix=("Server-render or pre-render the page so the main content is present in the raw HTML. "
+             "Most AI crawlers do not execute JavaScript — content that only appears after JS runs is invisible to them."
+             ) if words < 300 else "",
+        priority="High" if words < 300 else "",
+    ))
+
+    ratio = len(" ".join(p.text_chunks)) / max(len(page.body), 1)
+    ratio_pts = clamp(ratio / 0.10 * 10, 0, 10)
+    checks.append(Check(
+        "GEO · Content", "Text-to-code ratio",
+        round(ratio_pts, 1), 10,
+        f"{ratio:.0%} of the page's HTML is actual readable text",
+        fix=("Trim heavy scripts, inline styles and markup bloat. A page that is mostly code makes it "
+             "harder and costlier for AI systems to extract the substance.") if ratio < 0.05 else "",
+        priority="Low" if ratio < 0.05 else "",
+    ))
+
+    # ---------------- GEO pillar C: TRUST (25 pts) ----------------
+    author = bool(p.meta.get("author") or p.meta.get("article:author")
+                  or re.search(r"\bby\s+[A-Z][a-z]+\s+[A-Z][a-z]+", page.body[:60000]))
+    date = bool(p.meta.get("article:published_time") or p.meta.get("article:modified_time")
+                or p.time_tags or re.search(r"datePublished", page.body))
+    checks.append(Check(
+        "GEO · Trust", "Named author / byline", 8 if author else 0, 8,
+        "An author or byline is present" if author else "No author or byline detected",
+        fix="" if author else "Add a visible byline and an author meta tag or schema author. AI engines weigh accountable, attributed content more heavily.",
+        priority="" if author else "Medium",
+    ))
+    checks.append(Check(
+        "GEO · Trust", "Published / updated dates", 8 if date else 0, 8,
+        "Publish or update dates are present" if date else "No publish/update dates detected",
+        fix="" if date else "Add visible dates plus datePublished/dateModified in schema. Freshness is a major selection signal for AI answers.",
+        priority="" if date else "Medium",
+    ))
+    ext_pts = clamp(p.links_external / 5 * 9, 0, 9)
+    checks.append(Check(
+        "GEO · Trust", "Outbound references", round(ext_pts, 1), 9,
+        f"{p.links_external} outbound links to other sites",
+        fix=("Cite sources: link claims and statistics to reputable external references. "
+             "Sourced content reads as evidence, not marketing, to AI systems.") if p.links_external < 3 else "",
+        priority="Medium" if p.links_external < 3 else "",
+    ))
+
+    # ---------------- GEO pillar D: PAGE IDENTITY (15 pts) ----------------
+    title_ok = 10 <= len(res.site_title) <= 70
+    desc = p.meta.get("description", "")
+    desc_ok = 50 <= len(desc) <= 170
+    checks.append(Check(
+        "GEO · Identity", "Clear page title", 5 if title_ok else (2 if res.site_title else 0), 5,
+        f"Title: “{res.site_title[:80]}”" if res.site_title else "No <title> found",
+        fix="" if title_ok else "Write a 10–70 character title that states plainly what the page is about.",
+        priority="" if title_ok else "Medium",
+    ))
+    checks.append(Check(
+        "GEO · Identity", "Meta description", 5 if desc_ok else (2 if desc else 0), 5,
+        f"Description is {len(desc)} characters" if desc else "No meta description",
+        fix="" if desc_ok else "Add a 50–170 character meta description that answers “what is this page?” in one sentence.",
+        priority="" if desc_ok else "Medium",
+    ))
+    checks.append(Check(
+        "GEO · Identity", "Canonical URL", 5 if p.canonical else 0, 5,
+        "Canonical link present" if p.canonical else "No canonical link",
+        fix="" if p.canonical else "Add <link rel=\"canonical\"> so engines consolidate signals onto one authoritative URL.",
+        priority="" if p.canonical else "Low",
+    ))
+
+    # ================= AEO =================
+    # ---------------- AEO pillar A: STRUCTURE (30 pts) ----------------
+    h1s = [h for h in p.headings if h[0] == 1]
+    subheads = [h for h in p.headings if h[0] in (2, 3)]
+    h1_pts = 8 if len(h1s) == 1 else (4 if h1s else 0)
+    checks.append(Check(
+        "AEO · Structure", "Single clear H1", h1_pts, 8,
+        f"{len(h1s)} H1 heading(s) found",
+        fix="" if len(h1s) == 1 else "Use exactly one H1 that names the page's core topic.",
+        priority="" if len(h1s) == 1 else "Medium",
+    ))
+    sub_pts = clamp(len(subheads) / 6 * 12, 0, 12)
+    checks.append(Check(
+        "AEO · Structure", "Section subheadings (H2/H3)", round(sub_pts, 1), 12,
+        f"{len(subheads)} subheadings break the page into sections",
+        fix=("Break content into H2/H3 sections of 150–300 words each. AI engines lift self-contained "
+             "sections as answers — walls of text rarely get quoted.") if len(subheads) < 3 else "",
+        priority="High" if len(subheads) < 3 else "",
+    ))
+    li_pts = clamp((p.lists + p.tables) / 3 * 10, 0, 10)
+    checks.append(Check(
+        "AEO · Structure", "Lists and tables", round(li_pts, 1), 10,
+        f"{p.lists} lists and {p.tables} tables",
+        fix=("Convert steps, comparisons and feature sets into lists or tables — the formats AI engines "
+             "extract most reliably.") if (p.lists + p.tables) < 2 else "",
+        priority="Medium" if (p.lists + p.tables) < 2 else "",
+    ))
+
+    # ---------------- AEO pillar B: QUESTION COVERAGE (25 pts) -------------
+    q_heads = [h for (_, h) in p.headings
+               if h.rstrip().endswith("?") or h.split(" ")[0].lower() in QUESTION_WORDS]
+    q_pts = clamp(len(q_heads) / 4 * 15, 0, 15)
+    checks.append(Check(
+        "AEO · Questions", "Question-style headings", round(q_pts, 1), 15,
+        f"{len(q_heads)} headings phrased as questions (e.g. “How does…”, “What is…”)",
+        fix=("Rewrite key headings as the literal questions your customers ask AI assistants "
+             "(“What does X cost?”, “How do I…?”). AI engines match user questions to question-shaped sections.") if len(q_heads) < 2 else "",
+        priority="High" if len(q_heads) < 2 else "",
+    ))
+    faq_text = any("faq" in h.lower() or "frequently asked" in h.lower() for (_, h) in p.headings)
+    jsonld_types = extract_jsonld_types(p.jsonld_raw)
+    faq_schema = any(t.lower() == "faqpage" for t in jsonld_types)
+    faq_pts = 10 if (faq_schema or faq_text) else 0
+    checks.append(Check(
+        "AEO · Questions", "FAQ section", faq_pts, 10,
+        ("FAQ present" + (" with FAQPage schema" if faq_schema else " (text only, no FAQPage schema)"))
+        if (faq_schema or faq_text) else "No FAQ section detected",
+        fix="" if faq_schema else ("Add an FAQ section answering the 5–8 questions buyers actually ask, "
+                                   "and mark it up with FAQPage schema so engines can parse Q→A pairs directly."),
+        priority="" if faq_schema else ("Medium" if faq_text else "High"),
+    ))
+
+    # ---------------- AEO pillar C: STRUCTURED DATA (30 pts) ---------------
+    sd_pts = 0.0
+    if jsonld_types:
+        sd_pts = 15
+        rich = {"article", "newsarticle", "blogposting", "faqpage", "howto", "product",
+                "organization", "person", "breadcrumblist", "website", "softwareapplication", "service"}
+        bonus = len({t.lower() for t in jsonld_types} & rich)
+        sd_pts += clamp(bonus * 4, 0, 15)
+    shown_types = ", ".join(sorted(set(jsonld_types))[:8]) if jsonld_types else "none"
+    checks.append(Check(
+        "AEO · Labels", "Schema.org structured data", round(sd_pts, 1), 30,
+        f"JSON-LD types found: {shown_types}",
+        fix=("Add JSON-LD structured data (Organization on the home page; Article/BlogPosting with author "
+             "and dates on content; FAQPage on FAQs; Product/Service where relevant). Schema is how you "
+             "label content so machines understand it without guessing.") if sd_pts < 20 else "",
+        priority="High" if sd_pts == 0 else ("Medium" if sd_pts < 20 else ""),
+    ))
+
+    # ---------------- AEO pillar D: ANSWER SHAPE (15 pts) ----------------
+    crisp = [pp for pp in p.paragraphs if 30 <= len(pp.split()) <= 70]
+    crisp_pts = clamp(len(crisp) / 4 * 9, 0, 9)
+    checks.append(Check(
+        "AEO · Answer shape", "Quotable answer paragraphs", round(crisp_pts, 1), 9,
+        f"{len(crisp)} paragraphs are in the 30–70 word “liftable answer” range",
+        fix=("Open each section with one 40–60 word paragraph that directly answers the section's question. "
+             "This is the unit AI engines quote verbatim.") if len(crisp) < 2 else "",
+        priority="Medium" if len(crisp) < 2 else "",
+    ))
+    alt_pts = 6 * (p.imgs_with_alt / p.imgs) if p.imgs else 6
+    checks.append(Check(
+        "AEO · Answer shape", "Image alt text", round(alt_pts, 1), 6,
+        (f"{p.imgs_with_alt} of {p.imgs} images have alt text" if p.imgs else "No images on the page (nothing to fix)"),
+        fix=("Describe every meaningful image in its alt attribute; it is the only way image content "
+             "reaches a text-based engine.") if p.imgs and p.imgs_with_alt < p.imgs else "",
+        priority="Low" if (p.imgs and p.imgs_with_alt < p.imgs) else "",
+    ))
+
+    # ---------------- totals ----------------
+    geo = [c for c in checks if c.pillar.startswith("GEO")]
+    aeo = [c for c in checks if c.pillar.startswith("AEO")]
+    res.geo_score = round(100 * sum(c.earned for c in geo) / sum(c.possible for c in geo))
+    res.aeo_score = round(100 * sum(c.earned for c in aeo) / sum(c.possible for c in aeo))
+    res.summary = build_summary(res, checks)
+    return res
+
+
+def build_summary(res: Result, checks: list[Check]) -> str:
+    overall = round((res.geo_score + res.aeo_score) / 2)
+    if overall >= 80:
+        opening = "This page is in strong shape for AI visibility."
+    elif overall >= 60:
+        opening = "This page has a solid foundation for AI visibility, with clear room to improve."
+    elif overall >= 40:
+        opening = "This page is partially visible to AI engines, but several fundamentals are missing."
+    else:
+        opening = "As it stands, AI engines will struggle to find, read, or quote this page."
+    highs = [c for c in checks if c.priority == "High"]
+    strongest = max(checks, key=lambda c: (c.earned / c.possible, c.possible))
+    spa_note = (" Important: the page appears to render its content with JavaScript, so crawlers "
+                "that don't run JS may see far less than a human visitor does.") if res.spa_warning else ""
+    if highs:
+        focus = highs[0].label.lower()
+        closing = (f" The single biggest win right now is fixing “{highs[0].label}” — see the "
+                   f"recommendations below, ordered by impact.")
+    else:
+        closing = " No critical gaps were found; the recommendations below are refinements."
+    return (f"{opening} GEO scored {res.geo_score}/100 (can AI systems access, read and trust the page) "
+            f"and AEO scored {res.aeo_score}/100 (is the content shaped like answers). "
+            f"Its strongest signal is “{strongest.label.lower()}.”{spa_note}{closing}")
+
+
+# ---------------------------------------------------------------------------
+# 6. REPORT — a designed, self-contained HTML page
+# ---------------------------------------------------------------------------
+
+def ring_svg(score: int, label: str, color: str) -> str:
+    r, circ = 64, 2 * 3.14159 * 64
+    dash = circ * score / 100
+    return f"""
+    <div class="ring">
+      <svg viewBox="0 0 160 160" width="160" height="160" role="img" aria-label="{label} score {score} out of 100">
+        <circle cx="80" cy="80" r="{r}" fill="none" stroke="#e7e6f4" stroke-width="13"/>
+        <circle cx="80" cy="80" r="{r}" fill="none" stroke="{color}" stroke-width="13"
+                stroke-linecap="round" stroke-dasharray="{dash:.1f} {circ:.1f}"
+                transform="rotate(-90 80 80)"/>
+        <text x="80" y="76" text-anchor="middle" class="ring-num">{score}</text>
+        <text x="80" y="100" text-anchor="middle" class="ring-sub">/ 100</text>
+      </svg>
+      <div class="ring-label">{label}</div>
+    </div>"""
+
+
+def grade(score: int) -> tuple[str, str]:
+    if score >= 85: return "A", "#0e9f6e"
+    if score >= 70: return "B", "#0ea5b7"
+    if score >= 55: return "C", "#d97706"
+    if score >= 40: return "D", "#ea580c"
+    return "F", "#dc2626"
+
+
+PRIORITY_ORDER = {"High": 0, "Medium": 1, "Low": 2}
+
+
+def render_report(res: Result) -> str:
+    esc = _html.escape
+    overall = round((res.geo_score + res.aeo_score) / 2)
+    g_letter, g_color = grade(overall)
+
+    # pillar bars
+    pillars: dict[str, list[Check]] = {}
+    for c in res.checks:
+        pillars.setdefault(c.pillar, []).append(c)
+    bars = ""
+    for name, cs in pillars.items():
+        pct = round(100 * sum(c.earned for c in cs) / sum(c.possible for c in cs))
+        bars += f"""
+        <div class="bar-row">
+          <div class="bar-name">{esc(name)}</div>
+          <div class="bar-track"><div class="bar-fill" style="width:{pct}%"></div></div>
+          <div class="bar-pct">{pct}%</div>
+        </div>"""
+
+    # checks table
+    check_rows = ""
+    for c in res.checks:
+        pct = c.earned / c.possible if c.possible else 0
+        dot = "#0e9f6e" if pct >= 0.85 else ("#d97706" if pct >= 0.4 else "#dc2626")
+        check_rows += f"""
+        <tr>
+          <td><span class="dot" style="background:{dot}"></span>{esc(c.label)}</td>
+          <td class="muted">{esc(c.detail)}</td>
+          <td class="num">{c.earned:g} / {c.possible:g}</td>
+        </tr>"""
+
+    # crawler table
+    crawler_rows = ""
+    for bot, role, kind, status in res.crawler_rows:
+        badge = {"allowed": ("Allowed", "#0e9f6e"), "blocked": ("Blocked", "#dc2626"),
+                 "partial": ("Partial", "#d97706")}[status]
+        crawler_rows += f"""
+        <tr><td><code>{esc(bot)}</code></td><td class="muted">{esc(role)}</td>
+        <td>{esc(kind)}</td><td><span class="pill" style="color:{badge[1]};border-color:{badge[1]}55">{badge[0]}</span></td></tr>"""
+
+    # recommendations
+    recs = sorted([c for c in res.checks if c.fix],
+                  key=lambda c: (PRIORITY_ORDER.get(c.priority, 3), -(c.possible - c.earned)))
+    rec_cards = ""
+    for i, c in enumerate(recs, 1):
+        pcolor = {"High": "#dc2626", "Medium": "#d97706", "Low": "#64748b"}.get(c.priority, "#64748b")
+        rec_cards += f"""
+        <div class="rec">
+          <div class="rec-head">
+            <span class="rec-n">{i:02d}</span>
+            <span class="rec-title">{esc(c.label)}</span>
+            <span class="pill" style="color:{pcolor};border-color:{pcolor}55">{esc(c.priority)} impact</span>
+          </div>
+          <p class="rec-why muted">Observed: {esc(c.detail)}</p>
+          <p class="rec-fix">{esc(c.fix)}</p>
+        </div>"""
+    if not recs:
+        rec_cards = "<p class='muted'>No fixes needed — every check passed. Re-run after content updates.</p>"
+
+    spa_banner = ("""<div class="warn">⚠️ JavaScript-rendered page detected. The scores below reflect what a
+    non-JS crawler sees — likely far less than human visitors see. Fixing server-side rendering should come
+    before everything else.</div>""" if res.spa_warning else "")
+
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Visibility Report — {esc(res.site_title)}</title>
+<style>
+  :root {{
+    --ink:#191731; --muted:#5d5a78; --line:#e7e6f4; --bg:#f7f6fc; --card:#ffffff;
+    --indigo:#372aac; --violet:#7c3aed; --cyan:#0891b2;
+  }}
+  * {{ box-sizing:border-box; margin:0; }}
+  body {{ font:16px/1.6 "Avenir Next","Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }}
+  .wrap {{ max-width:880px; margin:0 auto; padding:48px 24px 80px; }}
+  header.report {{ background:linear-gradient(135deg,#1c1740 0%, #372aac 70%, #4f46e5 100%); color:#fff;
+    border-radius:18px; padding:40px 40px 34px; }}
+  .eyebrow {{ font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:#b9c5ff; }}
+  header.report h1 {{ font-size:30px; line-height:1.25; margin:10px 0 4px; font-weight:700; }}
+  header.report .sub {{ color:#c9c6ec; font-size:14px; }}
+  .grade {{ float:right; text-align:center; background:#ffffff14; border:1px solid #ffffff2e;
+    border-radius:14px; padding:12px 20px; margin-left:16px; }}
+  .grade b {{ display:block; font-size:40px; line-height:1; }}
+  .scores {{ display:flex; gap:24px; justify-content:center; flex-wrap:wrap; margin:-46px 0 0; position:relative; }}
+  .ring {{ background:var(--card); border:1px solid var(--line); border-radius:16px; padding:22px 30px 16px;
+    text-align:center; box-shadow:0 10px 30px #372aac14; }}
+  .ring-num {{ font-size:40px; font-weight:700; fill:var(--ink); }}
+  .ring-sub {{ font-size:13px; fill:var(--muted); }}
+  .ring-label {{ margin-top:8px; font-weight:600; letter-spacing:.04em; }}
+  section {{ background:var(--card); border:1px solid var(--line); border-radius:16px; padding:30px 34px; margin-top:26px; }}
+  h2 {{ font-size:14px; letter-spacing:.16em; text-transform:uppercase; color:var(--indigo); margin-bottom:16px; }}
+  .muted {{ color:var(--muted); }}
+  .summary p {{ font-size:17px; }}
+  .warn {{ background:#fff7ed; border:1px solid #fdba74; color:#9a3412; border-radius:12px;
+    padding:14px 18px; margin-top:26px; font-size:15px; }}
+  .bar-row {{ display:grid; grid-template-columns:170px 1fr 52px; gap:14px; align-items:center; margin:10px 0; }}
+  .bar-name {{ font-size:14px; font-weight:600; }}
+  .bar-track {{ height:10px; background:var(--line); border-radius:99px; overflow:hidden; }}
+  .bar-fill {{ height:100%; border-radius:99px; background:linear-gradient(90deg,var(--violet),var(--cyan)); }}
+  .bar-pct {{ font-size:14px; text-align:right; color:var(--muted); }}
+  table {{ width:100%; border-collapse:collapse; font-size:14.5px; }}
+  td {{ padding:10px 10px 10px 0; border-top:1px solid var(--line); vertical-align:top; }}
+  tr:first-child td {{ border-top:none; }}
+  td.num {{ white-space:nowrap; text-align:right; color:var(--muted); }}
+  .dot {{ display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:9px; }}
+  code {{ background:#f1f0fa; padding:2px 7px; border-radius:6px; font-size:13px; }}
+  .pill {{ display:inline-block; font-size:12px; font-weight:600; border:1px solid; border-radius:99px; padding:2px 10px; }}
+  .rec {{ border:1px solid var(--line); border-radius:14px; padding:18px 22px; margin-top:14px; background:#fbfaff; }}
+  .rec-head {{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; }}
+  .rec-n {{ font-weight:700; color:var(--violet); font-size:15px; }}
+  .rec-title {{ font-weight:700; flex:1; }}
+  .rec-why {{ font-size:13.5px; margin-top:8px; }}
+  .rec-fix {{ margin-top:8px; font-size:15px; }}
+  footer {{ margin-top:36px; text-align:center; color:var(--muted); font-size:13px; }}
+  @media (max-width:640px) {{ header.report {{ padding:28px 22px; }} .grade {{ float:none; margin:0 0 14px; display:inline-block; }}
+    .bar-row {{ grid-template-columns:1fr; gap:4px; }} .bar-pct {{ text-align:left; }} }}
+</style></head><body><div class="wrap">
+
+<header class="report">
+  <div class="grade"><b style="color:#fff">{g_letter}</b><span style="font-size:12px;color:#c9c6ec">overall {overall}/100</span></div>
+  <div class="eyebrow">AI Visibility Report</div>
+  <h1>{esc(res.site_title)}</h1>
+  <div class="sub">{esc(res.final_url)} · checked {esc(res.fetched_at)} · {res.word_count:,} words seen by crawlers</div>
+</header>
+
+<div class="scores" style="margin-top:26px">
+  {ring_svg(res.geo_score, "GEO — found & trusted", "#7c3aed")}
+  {ring_svg(res.aeo_score, "AEO — shaped as answers", "#0891b2")}
+</div>
+
+{spa_banner}
+
+<section class="summary">
+  <h2>Summary</h2>
+  <p>{esc(res.summary)}</p>
+</section>
+
+<section>
+  <h2>Score breakdown</h2>
+  {bars}
+  <div style="height:14px"></div>
+  <table>{check_rows}</table>
+</section>
+
+<section>
+  <h2>AI crawler access (robots.txt)</h2>
+  <p class="muted" style="margin-bottom:12px;font-size:14px">Citation crawlers fetch pages to build AI answers
+  — they drive mentions and traffic. Training crawlers only collect data for model training.</p>
+  <table>{crawler_rows}</table>
+</section>
+
+<section>
+  <h2>Recommendations — start at the top</h2>
+  {rec_cards}
+</section>
+
+<footer>Generated by AI Visibility Studio · raw-HTML view (no JavaScript executed), the same way most AI crawlers read the web</footer>
+</div></body></html>"""
+
+
+# ---------------------------------------------------------------------------
+# 7. THE LOCAL WEB APP — paste a URL, get the report
+# ---------------------------------------------------------------------------
+
+HOME_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Visibility Studio</title>
+<style>
+  * { box-sizing:border-box; margin:0; }
+  body { min-height:100vh; display:flex; align-items:center; justify-content:center;
+    font:16px/1.6 "Avenir Next","Segoe UI",system-ui,sans-serif; color:#eceaff;
+    background:radial-gradient(1100px 700px at 70% -10%, #4f46e5 0%, transparent 55%),
+               radial-gradient(900px 600px at 0% 100%, #0e7490 0%, transparent 50%),
+               #14112e; }
+  .card { width:min(640px, 92vw); padding:8px 16px 32px; text-align:center; }
+  .mark { font-size:13px; letter-spacing:.22em; text-transform:uppercase; color:#9aa7ff; }
+  h1 { font-size:clamp(30px, 5vw, 44px); line-height:1.15; margin:14px 0 10px; font-weight:700; }
+  h1 em { font-style:normal; background:linear-gradient(90deg,#a78bfa,#67e8f9); -webkit-background-clip:text;
+    background-clip:text; color:transparent; }
+  p.lede { color:#b6b2d8; max-width:46ch; margin:0 auto 30px; }
+  form { display:flex; gap:10px; background:#ffffff12; border:1px solid #ffffff26; border-radius:16px;
+    padding:10px; backdrop-filter:blur(6px); }
+  input { flex:1; min-width:0; background:transparent; border:none; outline:none; color:#fff;
+    font-size:17px; padding:10px 12px; }
+  input::placeholder { color:#8d89b3; }
+  button { border:none; border-radius:11px; padding:12px 22px; font-size:16px; font-weight:700; cursor:pointer;
+    color:#14112e; background:linear-gradient(90deg,#a78bfa,#67e8f9); }
+  button:hover { filter:brightness(1.07); }
+  .hint { margin-top:16px; font-size:13.5px; color:#8d89b3; }
+  .hint code { background:#ffffff14; padding:2px 8px; border-radius:6px; }
+  #busy { display:none; margin-top:22px; color:#c4bfff; }
+  .spin { display:inline-block; width:14px; height:14px; border:2px solid #a78bfa; border-top-color:transparent;
+    border-radius:50%; animation:r 0.8s linear infinite; vertical-align:-2px; margin-right:8px; }
+  @keyframes r { to { transform:rotate(360deg); } }
+</style></head><body>
+<div class="card">
+  <div class="mark">AI Visibility Studio</div>
+  <h1>Will AI assistants <em>find and quote</em> this page?</h1>
+  <p class="lede">Paste a URL. Get a GEO score (can AI access &amp; trust it), an AEO score
+  (is it shaped like answers), and a prioritized fix list.</p>
+  <form action="/check" method="get" onsubmit="document.getElementById('busy').style.display='block'">
+    <input name="url" placeholder="https://yourwebsite.com/page" autofocus required>
+    <button>Run check</button>
+  </form>
+  <div id="busy"><span class="spin"></span>Fetching the page like an AI crawler… usually 5–15 seconds.</div>
+  <div class="hint">Reports are also saved to the <code>reports/</code> folder next to the script.</div>
+</div>
+</body></html>"""
+
+
+def save_report(res: Result) -> str:
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
+    os.makedirs(out_dir, exist_ok=True)
+    host = urllib.parse.urlparse(res.final_url).netloc.replace(":", "_") or "report"
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = os.path.join(out_dir, f"{host}-{stamp}.html")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(render_report(res))
+    return path
+
+
+class App(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):  # quiet the console
+        pass
+
+    def _send(self, body: str, status: int = 200):
+        data = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/":
+            self._send(HOME_HTML)
+        elif parsed.path == "/check":
+            qs = urllib.parse.parse_qs(parsed.query)
+            url = (qs.get("url") or [""])[0].strip()
+            if not url:
+                self._send(HOME_HTML)
+                return
+            outcome = analyze(url)
+            if isinstance(outcome, str):
+                self._send(f"""<body style="font-family:system-ui;max-width:560px;margin:80px auto;line-height:1.6">
+                  <h2>Couldn't check that page</h2><p>{_html.escape(outcome)}</p>
+                  <p><a href="/">&larr; Try another URL</a></p></body>""", 200)
+                return
+            path = save_report(outcome)
+            print(f"  ✓ {outcome.final_url}  GEO {outcome.geo_score}  AEO {outcome.aeo_score}  →  {path}")
+            self._send(render_report(outcome))
+        else:
+            self._send("<p>Not found. <a href='/'>Home</a></p>", 404)
+
+
+def main() -> None:
+    # CLI mode: python3 ai_visibility_studio.py https://example.com
+    if len(sys.argv) > 1:
+        outcome = analyze(sys.argv[1])
+        if isinstance(outcome, str):
+            print("✗", outcome)
+            sys.exit(1)
+        path = save_report(outcome)
+        print(f"GEO {outcome.geo_score}/100   AEO {outcome.aeo_score}/100")
+        print(f"Report saved: {path}")
+        return
+
+    port = 8765
+    while True:
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", port), App)
+            break
+        except OSError:
+            port += 1
+    addr = f"http://localhost:{port}"
+    print("\nAI Visibility Studio is running.")
+    print(f"  Open:  {addr}")
+    print("  Stop:  press Ctrl+C in this window\n")
+    try:
+        webbrowser.open(addr)
+    except Exception:
+        pass
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopped. Bye!")
+
+
+if __name__ == "__main__":
+    main()
