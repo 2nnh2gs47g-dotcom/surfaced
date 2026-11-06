@@ -186,3 +186,7 @@ The original tools still work unchanged:
 python3 ai_visibility_studio.py https://example.com   # one-off CLI scan
 python3 prospect_scan.py                              # batch scan urls.txt
 ```
+
+## iOS app
+
+`ios/` is a native SwiftUI client for `/api/scan`. Setup, the empty server field, and the Mac-only Xcode signing step are in `ios/README.md`. No server URL is built into the app.

@@ -1,0 +1,2 @@
+SAMPLE ONLY. Produced by server.result_to_dict from a constructed Result.
+Not a live website score. The iOS app does not load this file.
