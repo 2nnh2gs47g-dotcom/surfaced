@@ -18,3 +18,13 @@ services:
       # https://surfaced.onrender.com  — it drives canonical and OG tags.
       - key: SURFACED_BASE_URL
         sync: false
+      - key: SURFACED_PRICE_CENTS
+        value: "2000"
+      # Leave payments off until the Dashboard has a secret key and a $20 price.
+      # Set SURFACED_PAYMENTS to on only when those are filled in.
+      - key: SURFACED_PAYMENTS
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PRICE_ID
+        sync: false

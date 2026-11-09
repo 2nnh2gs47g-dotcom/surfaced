@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Surfaced — AI visibility check</title>
-<meta name="description" content="Check whether ChatGPT, Claude, Gemini and Perplexity can reach, read and quote your website. Free, no signup.">
+<meta name="description" content="Check whether ChatGPT, Claude, Gemini and Perplexity can reach, read and quote your website. The preview is free. The full report is a one-time purchase when payments are on.">
 <meta name="author" content="Surfaced">
 <meta property="og:title" content="Surfaced — AI visibility check">
 <meta property="og:description" content="Check whether AI assistants can find, trust and quote your website.">
@@ -80,7 +80,7 @@
     <input id="url" name="url" type="text" placeholder="yourwebsite.com" required autocomplete="url">
     <button id="go" type="submit">Run the check</button>
   </form>
-  <p class="note">Free &middot; no signup &middot; about 10 seconds</p>
+  <p class="note">Preview is free &middot; the full report is a one-time purchase on the scanner when payments are on</p>
 
   <div id="out"></div>
 
@@ -120,6 +120,31 @@
 
       if (!res.ok) {
         out.innerHTML = `<p class="msg">${esc(data.error || "That page couldn't be checked.")}</p>`;
+        return;
+      }
+
+      if (data.access === "teaser" || !data.scores || data.scores.geo == null) {
+        const price = (data.price && typeof data.price.amount_cents === "number")
+          ? (data.price.amount_cents % 100 === 0
+              ? "$" + (data.price.amount_cents / 100)
+              : "$" + (data.price.amount_cents / 100).toFixed(2))
+          : "$20";
+        const vertical = data.vertical ? data.vertical.label : "";
+        const fix = data.top_fix
+          ? `<h2>Top fix</h2><ol class="fixes"><li><strong>${esc(data.top_fix.label)}
+             <span class="tag ${esc(data.top_fix.priority)}">${esc(data.top_fix.priority)}</span></strong>
+             ${esc(data.top_fix.fix)}</li></ol>`
+          : "";
+        const pay = `${API_BASE}/scan?url=${encodeURIComponent(url)}`;
+        out.innerHTML = `
+          <div class="rings">
+            <div class="ring"><b>${esc(data.scores ? data.scores.overall : "")}</b><span>overall</span></div>
+            <div class="ring"><b>${esc(data.grade || "")}</b><span>grade</span></div>
+          </div>
+          <p class="summary">${esc(vertical)}</p>
+          ${fix}
+          <p class="note"><a href="${esc(pay)}">Get the full report for ${esc(price)}</a>
+          on the scanner. This page does not take payment.</p>`;
         return;
       }
 
