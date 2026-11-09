@@ -1,0 +1,3 @@
+SAMPLE ONLY. The full file is server.result_to_dict from a constructed Result.
+The preview file matches teaser_payload on cursor/paid-report-checkout-7c16.
+Not a live website score. The iOS app does not load these files.

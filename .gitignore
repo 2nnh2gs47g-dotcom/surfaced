@@ -5,3 +5,9 @@ scan_history.json
 *.log
 app.pid
 .env
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+ios/Surfaced/build/
