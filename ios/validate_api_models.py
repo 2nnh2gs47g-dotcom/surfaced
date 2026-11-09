@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 IOS = Path(__file__).resolve().parent
 MODELS = IOS / "Surfaced" / "Surfaced" / "ScanModels.swift"
 FIXTURE = IOS / "Fixtures" / "sample-scan-response.json"
+PREVIEW_FIXTURE = IOS / "Fixtures" / "sample-preview-response.json"
 CLIENT = IOS / "Surfaced" / "Surfaced" / "ScanClient.swift"
 APP = IOS / "Surfaced" / "Surfaced" / "ContentView.swift"
 
@@ -110,6 +111,59 @@ def build_payload() -> dict:
     return payload
 
 
+def teaser_payload(res: studio.Result) -> dict:
+    """Same JSON shape as teaser_payload on branch cursor/paid-report-checkout-7c16.
+
+    Built from that function: access teaser, overall score only, one top fix,
+    and the checkout object. Empty payment_error is omitted. Price uses the
+    branch default SURFACED_PRICE_CENTS of 2000. This is a SAMPLE, not a live score.
+    """
+    overall = studio.overall_score(res)
+    ranked = sorted(
+        (c for c in res.checks if c.fix),
+        key=lambda c: (studio.PRIORITY_ORDER.get(c.priority, 3), -(c.possible - c.earned)),
+    )
+    top = None
+    if ranked:
+        fix = ranked[0]
+        top = {
+            "label": fix.label,
+            "priority": fix.priority,
+            "observed": fix.detail,
+            "fix": fix.fix,
+        }
+    return {
+        "access": "teaser",
+        "paid": False,
+        "price": {"amount_cents": 2000, "currency": "usd"},
+        "url": res.final_url,
+        "title": res.site_title,
+        "checked_at": res.fetched_at,
+        "grade": studio.grade(overall)[0],
+        "vertical": {
+            "key": res.vertical,
+            "label": studio.VERTICAL_LABELS[res.vertical],
+            "weighting": studio.weighting_sentence(res),
+            "detected_from": res.vertical_evidence if not res.vertical_forced else "set manually",
+        },
+        "scores": {"overall": overall},
+        "top_fix": top,
+        "checkout": {"method": "POST", "path": "/checkout"},
+    }
+
+
+def classifies_as_full(payload: dict) -> bool:
+    """Mirrors ScanPayload.decode: full when summary, recommendations, pillars, and scores.geo exist."""
+    scores = payload.get("scores")
+    return (
+        isinstance(payload.get("summary"), str)
+        and isinstance(payload.get("recommendations"), list)
+        and isinstance(payload.get("pillars"), dict)
+        and isinstance(scores, dict)
+        and isinstance(scores.get("geo"), int)
+    )
+
+
 def check_models(payload: dict) -> None:
     source = MODELS.read_text(encoding="utf-8")
     report_keys = coding_keys(source, "ScanReport")
@@ -150,6 +204,46 @@ def check_models(payload: dict) -> None:
     require("ScanReport.sample" not in app and ".sample" not in app.split("#if DEBUG", 1)[0], "app uses the sample report")
     client = CLIENT.read_text(encoding="utf-8")
     require("sample-scan-response" not in client and "Fixtures" not in client, "client loads the fixture")
+    require("ScanPayload.decode" in client, "client does not decode both payload shapes")
+
+
+def check_preview(full: dict, preview: dict) -> None:
+    source = MODELS.read_text(encoding="utf-8")
+    app = APP.read_text(encoding="utf-8")
+    preview_keys = coding_keys(source, "ScanPreview")
+    preview_score_keys = coding_keys(source, "ScanPreviewScores")
+    require(
+        set(preview_keys) == {"access", "url", "title", "checked_at", "grade", "vertical", "scores", "top_fix"},
+        f"preview keys {preview_keys}",
+    )
+    require(preview_score_keys == ["overall"], f"preview score keys {preview_score_keys}")
+    require("let topFix: ScanRecommendation?" in source, "top_fix must be optional")
+    require(preview["access"] == "teaser" and preview["paid"] is False, "teaser flags")
+    require(preview["price"] == {"amount_cents": 2000, "currency": "usd"}, "price")
+    require(preview["checkout"] == {"method": "POST", "path": "/checkout"}, "checkout object")
+    require(set(preview["scores"]) == {"overall"} and preview["scores"]["overall"] == 32, "preview scores")
+    require(preview["grade"] == "F", "preview grade")
+    require(preview["top_fix"]["priority"] == "High", "preview top fix")
+    for absent in ("summary", "recommendations", "pillars", "word_count", "javascript_rendered", "payment_error"):
+        require(absent not in preview, f"teaser should omit {absent}")
+    require_types(preview["vertical"], coding_keys(source, "ScanVertical"), str, "preview vertical")
+    require_types(preview["top_fix"], coding_keys(source, "ScanRecommendation"), str, "top fix")
+    require("SAMPLE" in preview["title"], "preview title was not labeled SAMPLE")
+
+    require(classifies_as_full(full), "full payload was not classified as a full report")
+    paid_full = dict(full)
+    paid_full["access"] = "full"
+    paid_full["paid"] = True
+    require(classifies_as_full(paid_full), "paid full payload must still classify as a full report")
+    require(not classifies_as_full(preview), "teaser classified as a full report")
+    require('probe.access == "teaser"' in source, "decoder does not branch on the teaser access flag")
+
+    note = "This is a preview. The full report is available on the Surfaced website."
+    require(note in app, "preview screen is missing the website note")
+    swift = "\n".join(path.read_text(encoding="utf-8") for path in (IOS / "Surfaced" / "Surfaced").glob("*.swift"))
+    lowered = swift.lower()
+    for banned in ("/checkout", "stripe", "session_id", "storekit"):
+        require(banned not in lowered, f"app references {banned}")
 
 
 def check_error_route() -> None:
@@ -197,20 +291,27 @@ def check_error_route() -> None:
             proc.kill()
 
 
-def main() -> None:
-    payload = build_payload()
-    check_models(payload)
-    FIXTURE.parent.mkdir(parents=True, exist_ok=True)
+def store_fixture(path: Path, payload: dict) -> None:
     text = json.dumps(payload, indent=2) + "\n"
     if "--write" in sys.argv:
-        FIXTURE.write_text(text, encoding="utf-8")
-        print(f"wrote {FIXTURE}")
-    else:
-        require(FIXTURE.is_file(), f"missing {FIXTURE}; run with --write")
-        saved = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        require(saved == payload, "committed SAMPLE fixture does not match result_to_dict")
+        path.write_text(text, encoding="utf-8")
+        print(f"wrote {path}")
+        return
+    require(path.is_file(), f"missing {path}; run with --write")
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    require(saved == payload, f"{path.name} does not match the serializer")
+
+
+def main() -> None:
+    payload = build_payload()
+    preview = teaser_payload(sample_result())
+    check_models(payload)
+    check_preview(payload, preview)
+    FIXTURE.parent.mkdir(parents=True, exist_ok=True)
+    store_fixture(FIXTURE, payload)
+    store_fixture(PREVIEW_FIXTURE, preview)
     check_error_route()
-    print("ok: result_to_dict payload matches ScanModels; /api/scan error JSON is an error string")
+    print("ok: full and teaser payloads match ScanModels; /api/scan error JSON is an error string")
 
 
 if __name__ == "__main__":

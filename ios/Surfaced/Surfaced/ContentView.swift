@@ -8,15 +8,18 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let report = model.report {
+                switch model.outcome {
+                case .full(let report):
                     ReportView(report: report)
-                } else {
+                case .preview(let preview):
+                    PreviewReportView(preview: preview)
+                case nil:
                     ScanFormView(model: model)
                 }
             }
             .navigationTitle("Surfaced")
             .toolbar {
-                if model.report != nil {
+                if model.outcome != nil {
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button("New scan") { model.reset() }
                             .accessibilityHint("Clears this report and returns to the address field")
@@ -97,6 +100,64 @@ private struct ScanFormView: View {
             } footer: {
                 Text("Enter the HTTPS origin of a Surfaced server you control. The app calls /api/scan on that host. No server address is built in.")
             }
+        }
+    }
+}
+
+private struct PreviewReportView: View {
+    let preview: ScanPreview
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("This is a preview. The full report is available on the Surfaced website.")
+                    .font(.body)
+                    .accessibilityAddTraits(.isHeader)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Overall")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("\(preview.scores.overall)")
+                        .font(.system(size: 56, weight: .semibold, design: .rounded))
+                        .accessibilityLabel("Overall score \(preview.scores.overall) out of 100")
+                    Text("Grade \(preview.grade)")
+                        .font(.headline)
+                    Text(preview.vertical.label)
+                        .font(.body)
+                    Text(preview.vertical.weighting)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("Detected from \(preview.vertical.detectedFrom)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(preview.title)
+                        .font(.title3.weight(.semibold))
+                    Text(preview.url)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                    Text("Checked \(preview.checkedAt)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("Top fix")
+                    .font(.title3.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+
+                if let item = preview.topFix {
+                    RecommendationRow(item: item)
+                } else {
+                    Text("The preview did not include a top fix.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

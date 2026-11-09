@@ -1,0 +1,31 @@
+{
+  "access": "teaser",
+  "paid": false,
+  "price": {
+    "amount_cents": 2000,
+    "currency": "usd"
+  },
+  "url": "https://sample.example/",
+  "title": "SAMPLE \u2014 not a live scan",
+  "checked_at": "2026-01-01T00:00:00Z",
+  "grade": "F",
+  "vertical": {
+    "key": "local",
+    "label": "Local / in-person business",
+    "weighting": "40% website (GEO+AEO) + 40% reviews + 20% social",
+    "detected_from": "SAMPLE schema.org Dentist"
+  },
+  "scores": {
+    "overall": 32
+  },
+  "top_fix": {
+    "label": "Answer-first summary",
+    "priority": "High",
+    "observed": "SAMPLE: no summary found.",
+    "fix": "SAMPLE: add a short answer at the top."
+  },
+  "checkout": {
+    "method": "POST",
+    "path": "/checkout"
+  }
+}

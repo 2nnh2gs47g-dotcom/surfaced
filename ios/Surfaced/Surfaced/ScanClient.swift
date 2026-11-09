@@ -9,7 +9,7 @@ struct ScanClient {
         return URLSession(configuration: configuration)
     }()
 
-    func scan(websiteRaw: String, backendBase: String) async throws -> ScanReport {
+    func scan(websiteRaw: String, backendBase: String) async throws -> ScanOutcome {
         let website = try WebsiteAddress.normalize(websiteRaw)
         let trimmedBase = backendBase.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedBase.isEmpty {
@@ -50,11 +50,7 @@ struct ScanClient {
             throw ScanFailure.http(status: http.statusCode, message: message)
         }
 
-        do {
-            return try JSONDecoder().decode(ScanReport.self, from: data)
-        } catch {
-            throw ScanFailure.undecodable
-        }
+        return try ScanPayload.decode(data)
     }
 
     private static func message(for error: URLError) -> String {

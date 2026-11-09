@@ -7,6 +7,7 @@ Small native SwiftUI client for the existing `GET /api/scan` JSON API. It does n
 - Enter a website address.
 - Call `/api/scan?url=` on a Surfaced server you configure.
 - Show a loading state, then the returned overall score, GEO / AEO / reviews / social scores, and prioritized fixes.
+- If the server has payments on and returns the preview (`access` of `teaser`), show the overall score, grade, vertical, and single top fix, and say the full report is on the website. The app does not open checkout or sell the report.
 - Show validation and network errors, with Retry.
 - Server setting is an HTTPS origin only. It starts empty. No production URL is included.
 

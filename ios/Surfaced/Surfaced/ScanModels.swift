@@ -74,6 +74,86 @@ struct ScanRecommendation: Decodable, Equatable {
     }
 }
 
+/// Unpaid `GET /api/scan` body from `teaser_payload` when payments are on.
+/// Checkout fields are intentionally not decoded. The app does not start a purchase.
+struct ScanPreview: Decodable, Equatable {
+    let access: String
+    let url: String
+    let title: String
+    let checkedAt: String
+    let grade: String
+    let vertical: ScanVertical
+    let scores: ScanPreviewScores
+    let topFix: ScanRecommendation?
+
+    enum CodingKeys: String, CodingKey {
+        case access = "access"
+        case url = "url"
+        case title = "title"
+        case checkedAt = "checked_at"
+        case grade = "grade"
+        case vertical = "vertical"
+        case scores = "scores"
+        case topFix = "top_fix"
+    }
+}
+
+struct ScanPreviewScores: Decodable, Equatable {
+    let overall: Int
+
+    enum CodingKeys: String, CodingKey {
+        case overall = "overall"
+    }
+}
+
+enum ScanOutcome: Equatable {
+    case full(ScanReport)
+    case preview(ScanPreview)
+}
+
+enum ScanPayload {
+    /// Full report when pillar scores and recommendations are present (payments off,
+    /// or a paid session). Otherwise the teaser preview.
+    static func decode(_ data: Data) throws -> ScanOutcome {
+        let probe: Probe
+        do {
+            probe = try JSONDecoder().decode(Probe.self, from: data)
+        } catch {
+            throw ScanFailure.undecodable
+        }
+        if probe.summary != nil,
+           probe.recommendations != nil,
+           probe.pillars != nil,
+           probe.scores?.geo != nil {
+            do {
+                return .full(try JSONDecoder().decode(ScanReport.self, from: data))
+            } catch {
+                throw ScanFailure.undecodable
+            }
+        }
+        if probe.access == "teaser" {
+            do {
+                return .preview(try JSONDecoder().decode(ScanPreview.self, from: data))
+            } catch {
+                throw ScanFailure.undecodable
+            }
+        }
+        throw ScanFailure.undecodable
+    }
+
+    private struct Probe: Decodable {
+        let access: String?
+        let summary: String?
+        let recommendations: [ScanRecommendation]?
+        let pillars: [String: Int]?
+        let scores: Scores?
+
+        struct Scores: Decodable {
+            let geo: Int?
+        }
+    }
+}
+
 struct APIErrorBody: Decodable, Equatable {
     let error: String
     let retryAfterSeconds: Int?

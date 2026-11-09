@@ -5,7 +5,7 @@ final class ScanViewModel: ObservableObject {
     @Published var website: String = ""
     @Published var backendBase: String
     @Published private(set) var phase: Phase = .idle
-    @Published private(set) var report: ScanReport?
+    @Published private(set) var outcome: ScanOutcome?
 
     enum Phase: Equatable {
         case idle
@@ -34,12 +34,12 @@ final class ScanViewModel: ObservableObject {
         let base = backendBase
         task?.cancel()
         phase = .loading
-        report = nil
+        outcome = nil
         task = Task {
             do {
-                let report = try await client.scan(websiteRaw: site, backendBase: base)
+                let outcome = try await client.scan(websiteRaw: site, backendBase: base)
                 guard !Task.isCancelled else { return }
-                self.report = report
+                self.outcome = outcome
                 self.phase = .idle
             } catch is CancellationError {
                 return
@@ -59,7 +59,7 @@ final class ScanViewModel: ObservableObject {
 
     func reset() {
         task?.cancel()
-        report = nil
+        outcome = nil
         phase = .idle
     }
 }
