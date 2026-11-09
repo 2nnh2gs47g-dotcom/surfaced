@@ -24,9 +24,11 @@ ENVIRONMENT VARIABLES (all optional)
 
 from __future__ import annotations
 
+import base64
 import ipaddress
 import json
 import os
+import secrets
 import socket
 import threading
 import time
@@ -38,7 +40,9 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ai_visibility_studio as studio
-from pages import landing_page, LLMS_TXT, ROBOTS_TXT, error_page
+from pages import landing_page, LLMS_TXT, ROBOTS_TXT, error_page, paid_page
+from pwa import APP_SHELL, MANIFEST, SERVICE_WORKER
+import billing
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -251,9 +255,50 @@ OG_IMAGE = """<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" 
 </svg>"""
 
 
+LEDGER_PATH = os.path.join(DATA_DIR, "ledger.db")
+_ledger_local = threading.local()
+
+
+def ledger() -> "billing.sqlite3.Connection":
+    """One SQLite connection per thread — SQLite objects cannot cross threads."""
+    conn = getattr(_ledger_local, "conn", None)
+    if conn is None:
+        conn = billing.connect(LEDGER_PATH)
+        billing.init(conn)
+        _ledger_local.conn = conn
+    return conn
+
+
+def access_key_for(session_id: str) -> str:
+    """
+    Derive the buyer's access key from their Stripe session id.
+
+    Deterministic, so /paid can show the key to whoever completed the checkout
+    without the key ever being stored in plaintext — the ledger holds only its
+    SHA-256. The Stripe session id is the bearer proof, and it is only ever
+    given to the browser that paid.
+    """
+    secret = (os.environ.get("SURFACED_KEY_SECRET")
+              or billing.WEBHOOK_SECRET or "surfaced-dev-only")
+    digest = billing.hmac.new(secret.encode(), session_id.encode(),
+                              billing.hashlib.sha256).digest()
+    return "sk_" + base64.urlsafe_b64encode(digest).decode().rstrip("=")[:32]
+
+
+ICON_ROUTES = {
+    "/icon-192.png": "icon-192.png",
+    "/icon-512.png": "icon-512.png",
+    "/icon-180.png": "icon-180.png",
+    "/icon-maskable.png": "icon-maskable.png",
+}
+ICON_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
 class Surfaced(BaseHTTPRequestHandler):
     server_version = "Surfaced"
     protocol_version = "HTTP/1.1"
+    paid_key = ""
+    idem_key = ""
 
     def log_message(self, fmt, *args):
         print(f"{self.client_ip()} {fmt % args}", flush=True)
@@ -285,6 +330,20 @@ class Surfaced(BaseHTTPRequestHandler):
             {"Access-Control-Allow-Origin": "*"},
         )
 
+    def send_icon(self, filename: str) -> None:
+        try:
+            with open(os.path.join(ICON_DIR, filename), "rb") as fh:
+                data = fh.read()
+        except OSError:
+            self.send_body("Icon not found", 404, "text/plain; charset=utf-8")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=604800")
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -292,12 +351,23 @@ class Surfaced(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def do_POST(self):
+        route = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+        if route == "/api/stripe/webhook":
+            self.handle_webhook()
+        elif route == "/api/checkout":
+            self.handle_checkout()
+        else:
+            self.send_json({"error": "Not found"}, 404)
+
     def do_GET(self):
         parts = urllib.parse.urlparse(self.path)
         route = parts.path.rstrip("/") or "/"
         query = urllib.parse.parse_qs(parts.query)
         target = (query.get("url") or [""])[0]
         vertical = (query.get("vertical") or [""])[0].strip().lower()
+        self.paid_key = (query.get("key") or [""])[0].strip()
+        self.idem_key = (query.get("idempotency") or [""])[0].strip()[:120]
 
         if route == "/":
             self.send_body(landing_page(BASE_URL))
@@ -317,6 +387,23 @@ class Surfaced(BaseHTTPRequestHandler):
                        f"<url><loc>{BASE_URL}/</loc><lastmod>2026-07-28</lastmod></url>"
                        "</urlset>")
             self.send_body(sitemap, content_type="application/xml; charset=utf-8")
+        elif route == "/paid":
+            self.handle_paid_landing((query.get("session_id") or [""])[0].strip())
+        elif route == "/api/credits":
+            k = self.paid_key
+            self.send_json({"credits": billing.balance_of(ledger(), k) if k else 0})
+        elif route == "/app":
+            self.send_body(APP_SHELL)
+        elif route == "/manifest.webmanifest":
+            self.send_body(MANIFEST, content_type="application/manifest+json; charset=utf-8")
+        elif route == "/sw.js":
+            # Scope is the whole site, so the worker must not be cached by the browser.
+            self.send_body(SERVICE_WORKER,
+                           content_type="application/javascript; charset=utf-8",
+                           extra_headers={"Cache-Control": "no-cache",
+                                          "Service-Worker-Allowed": "/"})
+        elif route in ICON_ROUTES:
+            self.send_icon(ICON_ROUTES[route])
         elif route == "/scan":
             self.handle_scan(target, as_json=False, vertical=vertical)
         elif route == "/api/scan":
@@ -325,12 +412,131 @@ class Surfaced(BaseHTTPRequestHandler):
             self.send_body(error_page("Page not found",
                                       "That address isn't part of Surfaced.", BASE_URL), 404)
 
+    def handle_paid_scan(self, target: str, vertical: str, key: str,
+                         idem: str) -> None:
+        """
+        A scan paid for with a credit.
+
+        The credit is reserved first, then committed only if the scan actually
+        produced a report. Any failure refunds it — the customer never pays for
+        a run that returned nothing.
+        """
+        conn = ledger()
+        if not idem:
+            self.send_json({"error": "An idempotency key is required for a paid scan."}, 400)
+            return
+        try:
+            res = billing.reserve(conn, key, idem, target)
+        except ValueError as exc:
+            self.send_json({"error": str(exc), "credits": billing.balance_of(conn, key)}, 402)
+            return
+
+        # This exact intent already ran: return what it produced, spend nothing.
+        if res.replayed:
+            if res.result:
+                payload = json.loads(res.result)
+                payload["replayed"] = True
+                self.send_json(payload)
+            else:
+                self.send_json({"error": "That scan is still running. Try again shortly."}, 409)
+            return
+
+        try:
+            result = run_scan(target, vertical)
+            payload = result_to_dict(result)
+            payload["credits"] = billing.balance_of(conn, key)
+            billing.commit_run(conn, res.run_id, json.dumps(payload))
+            self.send_json(payload)
+        except (BlockedURL, ValueError) as exc:
+            billing.refund_run(conn, res.run_id)
+            self.send_json({"error": str(exc), "credit_refunded": True}, 400)
+        except Exception:
+            billing.refund_run(conn, res.run_id)
+            self.send_json({"error": "The scan failed. Your credit was not used.",
+                            "credit_refunded": True}, 500)
+
+    def handle_webhook(self) -> None:
+        """
+        Stripe's payment notification. The only thing that can mint credit.
+
+        Always answers 200 once the signature checks out, including for events
+        already processed — a non-2xx makes Stripe retry for up to three days.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 1_000_000:
+            self.send_json({"error": "Bad request body."}, 400)
+            return
+        payload = self.rfile.read(length)
+
+        try:
+            event = billing.verify_signature(payload, self.headers.get("Stripe-Signature", ""))
+        except ValueError as exc:
+            # Unverified means unpaid as far as we are concerned.
+            self.send_json({"error": str(exc)}, 400)
+            return
+
+        mapped = billing.credits_for_event(event)
+        if mapped is None:
+            self.send_json({"ignored": True})      # 200: nothing to retry
+            return
+
+        event_id, object_id, email, credits = mapped
+        try:
+            billing.grant_credits(
+                ledger(), event_id=event_id, object_id=object_id, email=email,
+                credits=credits, access_key=access_key_for(object_id))
+        except Exception:
+            # A real failure: let Stripe retry rather than losing the payment.
+            self.send_json({"error": "Could not record the payment."}, 500)
+            return
+        self.send_json({"received": True})
+
+    def handle_checkout(self) -> None:
+        if not billing.configured():
+            self.send_json({"error": "Payments are not configured on this server."}, 503)
+            return
+        try:
+            url = billing.create_checkout_session(BASE_URL, secrets.token_urlsafe(12))
+        except billing.BillingError as exc:
+            self.send_json({"error": str(exc)}, 502)
+            return
+        self.send_json({"url": url})
+
+    def handle_paid_landing(self, session_id: str) -> None:
+        """Shown after checkout: confirms with Stripe, then reveals the key once."""
+        if not session_id:
+            self.send_body(error_page("No checkout session",
+                                      "That link is missing its session id.", BASE_URL), 400)
+            return
+        try:
+            session = billing.retrieve_session(session_id)
+        except billing.BillingError as exc:
+            self.send_body(error_page("Could not confirm the payment", str(exc), BASE_URL), 502)
+            return
+        if session.get("payment_status") != "paid":
+            self.send_body(error_page("Payment not completed",
+                                      "Stripe has not marked this checkout as paid.",
+                                      BASE_URL), 402)
+            return
+
+        key = access_key_for(session.get("id", session_id))
+        credits = billing.balance_of(ledger(), key)
+        self.send_body(paid_page(key, credits, BASE_URL))
+
     def handle_scan(self, target: str, as_json: bool, vertical: str = "") -> None:
         if not target:
             if as_json:
                 self.send_json({"error": "Add a ?url= parameter, e.g. /api/scan?url=example.com"}, 400)
             else:
                 self.send_body(landing_page(BASE_URL))
+            return
+
+        # A paid scan skips the free-tier limiter; its limit is the credit.
+        if as_json and self.paid_key:
+            self.handle_paid_scan(target, vertical, self.paid_key, self.idem_key)
             return
 
         allowed, retry_after = limiter.allow(self.client_ip())
@@ -367,6 +573,14 @@ class Surfaced(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    # A previous process may have died holding customers' credits.
+    try:
+        swept = billing.sweep_stale(ledger())
+        if swept:
+            print(f"Refunded {swept} scan credit(s) orphaned by an earlier restart.", flush=True)
+    except Exception as exc:
+        print(f"Ledger sweep skipped: {exc}", flush=True)
+
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Surfaced)
     server.daemon_threads = True
     print(f"Surfaced listening on 0.0.0.0:{PORT}  (public URL: {BASE_URL})", flush=True)

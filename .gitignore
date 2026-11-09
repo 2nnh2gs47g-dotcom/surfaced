@@ -2,6 +2,10 @@ __pycache__/
 *.pyc
 reports/
 scan_history.json
+ledger.db
+ledger.db-wal
+ledger.db-shm
 *.log
 app.pid
 .env
+.DS_Store

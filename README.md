@@ -92,6 +92,106 @@ The API sends `Access-Control-Allow-Origin: *`, so this works from any domain.
 
 ---
 
+## The app (iOS / Android, installable)
+
+`/app` is a progressive web app: the same scanner in a phone-shaped interface
+that installs to a home screen, runs full screen with no browser chrome, keeps a
+local history of recent checks, and opens offline.
+
+**Install on iPhone:** open `https://your-domain/app` in **Safari** (not Chrome)
+-> Share -> **Add to Home Screen**. On Android: Chrome -> menu -> **Install app**.
+
+There is no App Store build, and that is deliberate: a native app would need
+Xcode, a $99/year Apple Developer account, and review for every change. This
+ships with `git push` and updates the moment a user reopens it.
+
+Files: `pwa.py` (app shell, manifest, service worker) and `icon-*.png`.
+
+The app validates the address on the device before it calls the server — no
+spaces, no embedded credentials, a host with a real dot in it. A bad address
+costs nothing, which matters when a cold start can take a minute. Requests time
+out at 90s, a 429 tells the user how long to wait, and every failure that can be
+retried offers a Try again button.
+The service worker caches the shell only — scans always go to the network, so a
+cached result can never be mistaken for a live one.
+
+## Payments (Stripe)
+
+Credit model: a payment grants scan credits, a credit buys one run. The client
+is never trusted — credit comes only from a signature-verified Stripe webhook.
+
+### Set up
+
+1. Stripe Dashboard -> **Products** -> create a product, copy its **Price ID**.
+2. **Developers -> Webhooks -> Add endpoint**:
+   `https://your-domain/api/stripe/webhook`, event `checkout.session.completed`
+   (add `invoice.paid` for subscription renewals). Copy the **signing secret**.
+3. In Render -> **Environment**:
+
+```
+STRIPE_SECRET_KEY              sk_test_...  (switch to sk_live_ when ready)
+STRIPE_WEBHOOK_SECRET          whsec_...
+STRIPE_PRICE_ID                price_...
+SURFACED_CREDITS_PER_PURCHASE  1
+SURFACED_DATA_DIR              /var/data     <- must be a persistent disk
+```
+
+**The ledger must be on a persistent disk.** It records who paid. On Render's
+default ephemeral filesystem every redeploy deletes it and customers lose
+credits they paid for. Attach a disk (paid instance types only), mount it at
+`/var/data`, and point `SURFACED_DATA_DIR` there. `render.yaml` declares it.
+
+### How exactly-once is enforced
+
+| Where duplication happens | What stops it |
+|---|---|
+| Stripe delivers webhooks at least once, retrying for up to 3 days | `UNIQUE(stripe_event_id)` — the second INSERT is refused by the database |
+| User double-taps Run, or the network retries | `UNIQUE(idempotency_key)` — the replay returns the first run's result |
+| Two requests spend the last credit at once | `UPDATE ... WHERE credits > 0` plus a rowcount check — exactly one winner |
+| A run fails, or the process dies mid-scan | Credit is reserved, then committed or refunded; `sweep_stale()` recovers orphans on restart |
+
+Each defence is a database constraint, not an `if` statement. Check-then-act has
+a race window between the read and the write; a constraint has none.
+
+```bash
+python3 test_billing.py     # 28 assertions, incl. 12- and 8-thread races
+```
+
+### Paid routes
+
+| Route | Purpose |
+|---|---|
+| `POST /api/checkout` | Creates a Stripe Checkout Session, returns its URL |
+| `POST /api/stripe/webhook` | Stripe's confirmation — the only thing that mints credit |
+| `GET /paid?session_id=` | Shows the buyer their scan key, once |
+| `GET /api/credits?key=` | Remaining credits |
+| `GET /api/scan?...&key=&idempotency=` | A paid run |
+
+## Before you deploy
+
+```bash
+python3 test_scoring.py     # 34 scoring regressions (the 9 Nov QA defects)
+python3 test_contract.py    # the app/server JSON contract
+python3 test_billing.py     # 28 payment guarantees
+```
+
+### Scoring defects fixed 9 Nov (from a live QA run)
+
+| Defect | What a customer saw | Fix |
+|---|---|---|
+| Crawler access | Any `Disallow` (e.g. `/wp-admin/`) scored **0 of 30** and the report claimed "0 of 6 citation crawlers can reach the site" — false on 7 of 17 sites tested | robots.txt is matched against the *scanned path*, per the real spec. `partial` is informational and costs nothing |
+| Unreadable pages | An empty or intercepted response still got graded **F**, telling owners to add an H1 they already had | Fewer than 50 words with no title or headings returns an explanation instead of a score |
+| Blocked sites | 23% of sites returned an error and no report | Retries once as a browser; if that works, reports the firewall as a High-priority finding |
+| Page titles | Every report showed the domain — `<title>` sits in `<head>`, which the parser skipped | Title captured before the skip guard |
+| Business type | A dentist with an address and phone scored as "General business" | Street address + phone + practice words detect local without schema |
+| Advice wording | Thin static pages were told to "server-render"; Google Maps short links missed; API-key setup notes shown to customers | Each corrected; all covered by `test_scoring.py` |
+
+The app decodes the JSON from `server.result_to_dict`. Rename a key there and
+the app breaks silently in a user's hand: the scan succeeds, the screen shows
+nothing useful, nothing logs an error. This test fails instead. It also catches
+the reverse — the app reading a field the server does not send yet. No network,
+runs in under a second.
+
 ## Routes
 
 | Route | Purpose |
@@ -99,6 +199,8 @@ The API sends `Access-Control-Allow-Origin: *`, so this works from any domain.
 | `/` | Landing page and scan form |
 | `/scan?url=` | Full HTML report |
 | `/api/scan?url=` | Same scan as JSON, CORS open |
+| `/app` | Installable app (PWA) |
+| `/manifest.webmanifest`, `/sw.js`, `/icon-*.png` | App install metadata |
 | `/health` | Uptime check |
 | `/robots.txt`, `/llms.txt`, `/sitemap.xml`, `/og.svg` | Machine-readable metadata |
 

@@ -18,3 +18,22 @@ services:
       # https://surfaced.onrender.com  — it drives canonical and OG tags.
       - key: SURFACED_BASE_URL
         sync: false
+      # Stripe. Set the values in the Render dashboard, never in this file.
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_ID
+        sync: false
+      - key: SURFACED_CREDITS_PER_PURCHASE
+        value: "1"
+      # The credit ledger MUST live on the persistent disk below. On the
+      # default ephemeral filesystem every redeploy destroys it, and paying
+      # customers silently lose the credits they bought.
+      - key: SURFACED_DATA_DIR
+        value: /var/data
+    # Requires a paid instance type; free instances cannot mount disks.
+    disk:
+      name: surfaced-data
+      mountPath: /var/data
+      sizeGB: 1

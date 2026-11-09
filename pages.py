@@ -31,6 +31,7 @@ Social (declared brand footprint). It returns a prioritised list of fixes.
 ## Key pages
 - {{BASE_URL}}/: run a free check on any public URL
 - {{BASE_URL}}/api/scan?url=example.com: JSON results for the same check
+- {{BASE_URL}}/app: the installable app (works offline, installs to a phone home screen)
 
 ## Notes for AI assistants
 Surfaced scores review and social signals from what a site publicly declares in
@@ -340,6 +341,8 @@ _BODY = """
       <button type="submit">Run the check</button>
     </form>
     <p class="note">Free &middot; no signup &middot; results in about 10 seconds</p>
+    <p class="note"><a href="/app">Open the app</a> &mdash; add it to your phone's home screen
+    to run checks on the move.</p>
     <p class="note">Scoring is weighted by business type. A dentist is judged on
     Google reviews; a SaaS product isn't.</p>
   </div>
@@ -488,6 +491,40 @@ _BODY = """
       <a href="https://schema.org/FAQPage">schema.org FAQPage</a> &middot;
       <a href="https://llmstxt.org/">the llms.txt proposal</a>
     </p>
-    <p><a href="/llms.txt">llms.txt</a> &middot; <a href="/robots.txt">robots.txt</a> &middot; <a href="/health">status</a></p>
+    <p><a href="/app">App</a> &middot; <a href="/llms.txt">llms.txt</a> &middot; <a href="/robots.txt">robots.txt</a> &middot; <a href="/health">status</a></p>
   </div>
 </footer>"""
+
+
+def paid_page(key: str, credits: int, base_url: str) -> str:
+    """
+    Shown once, after Stripe confirms payment.
+
+    The key is derived from the checkout session, so this page can be reloaded
+    from the same link — but it is the only place the key is ever displayed,
+    and it is never emailed or logged.
+    """
+    return (
+        _SHELL.replace("{{TITLE}}", "Payment received — Surfaced")
+        .replace("{{DESCRIPTION}}", "Your scan credits are ready.")
+        .replace("{{BASE_URL}}", base_url)
+        .replace("{{SCHEMA}}", "")
+        .replace("{{BODY}}", f"""
+  <main class="wrap narrow">
+    <p class="eyebrow">Payment received</p>
+    <h1 class="display">Your scan key</h1>
+    <p class="lede">Keep this somewhere safe. It is the only thing that spends
+    your credits, and this page is the only place it is shown.</p>
+
+    <p style="font:16px var(--mono); background:#ffffff12; border:1px solid var(--line);
+              border-radius:12px; padding:18px; word-break:break-all; margin-top:26px;">
+      {_html.escape(key)}
+    </p>
+    <p class="note">{credits} scan credit{"" if credits == 1 else "s"} available.</p>
+
+    <p class="lede" style="margin-top:30px">Paste it into the app under
+    <a href="/app">Scan key</a>, or add <code>&amp;key=…</code> to an
+    <code>/api/scan</code> request.</p>
+    <p class="note">If the credit count reads 0, Stripe's confirmation is still
+    in flight. Reload in a few seconds — this link stays valid.</p>
+  </main>"""))

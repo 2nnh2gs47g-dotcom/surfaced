@@ -98,11 +98,30 @@ class Fetched:
     https: bool = False
 
 
-def fetch(url: str, timeout: int = 20) -> Fetched:
+# Used only to retry a site that turned the scanner away. If this succeeds
+# where the honest crawler UA failed, that is itself the finding.
+BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+
+# Interstitials that mean "a bot check ran", not "this is the page".
+CHALLENGE_MARKERS = (
+    "just a moment", "checking your browser", "cf-browser-verification",
+    "enable javascript and cookies to continue", "attention required",
+    "ddos protection by", "access denied", "sucuri website firewall",
+    "request unsuccessful. incapsula", "verifying you are human",
+)
+
+
+def looks_like_challenge(body: str) -> bool:
+    head = body[:4000].lower()
+    return any(marker in head for marker in CHALLENGE_MARKERS)
+
+
+def fetch(url: str, timeout: int = 20, ua: str = "") -> Fetched:
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": REQUEST_UA,
+            "User-Agent": ua or REQUEST_UA,
             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
             "Accept-Encoding": "gzip",
             "Accept-Language": "en-US,en;q=0.8",
@@ -163,8 +182,37 @@ def parse_robots(text: str) -> list[dict]:
     return groups
 
 
-def bot_access(groups: list[dict], bot: str) -> str:
-    """'allowed' | 'blocked' | 'partial' for the site root, for one bot."""
+def _rule_match(pattern: str, path: str) -> int:
+    """
+    Length of `pattern` if it matches `path`, else -1.
+
+    Implements the matching rules the search engines actually use: `*` stands
+    for any run of characters and `$` anchors the end. An empty pattern
+    (`Disallow:` with nothing after it) matches nothing, which is how a site
+    says "allow everything".
+    """
+    if not pattern:
+        return -1
+    anchored = pattern.endswith("$")
+    body = pattern[:-1] if anchored else pattern
+    rx = ".*".join(re.escape(part) for part in body.split("*"))
+    if anchored:
+        rx += "$"
+    return len(pattern) if re.match(rx, path) else -1
+
+
+def bot_access(groups: list[dict], bot: str, path: str = "/") -> str:
+    """
+    Can this bot fetch `path`?
+
+      'allowed' — yes, and nothing on the site is disallowed for it
+      'partial' — yes, this page is reachable; other paths are disallowed
+      'blocked' — no, this page itself is disallowed
+
+    'partial' is informational only. Nearly every WordPress site disallows
+    /wp-admin/, which says nothing whatever about whether an AI crawler can
+    read the page being scanned — so it must not cost a site any points.
+    """
     bot_l = bot.lower()
     matched = None
     for g in groups:
@@ -178,13 +226,16 @@ def bot_access(groups: list[dict], bot: str) -> str:
                 break
     if matched is None:
         return "allowed"
-    dis = [d for d in matched["disallow"] if d]
-    if any(d.strip() == "/" for d in dis):
-        # A blanket Disallow: / — unless an explicit Allow: / overrides it
-        if any(a.strip() == "/" for a in matched["allow"]):
-            return "allowed"
+
+    # Most specific rule wins; an equally specific Allow beats a Disallow.
+    best_dis = max((_rule_match(d, path) for d in matched["disallow"]), default=-1)
+    best_allow = max((_rule_match(a, path) for a in matched["allow"]), default=-1)
+
+    if best_dis > best_allow:
         return "blocked"
-    if dis:
+    # 'partial' means some OTHER path is disallowed — a rule that does not
+    # apply to the page we scanned. A Disallow the Allow overrode is not that.
+    if any(_rule_match(d, path) < 0 for d in matched["disallow"] if d.strip()):
         return "partial"
     return "allowed"
 
@@ -277,11 +328,30 @@ SERVICES_SCHEMA = {
     "financialservice", "insuranceagency", "consultingservice", "employmentagency",
 }
 SAAS_SCHEMA = {"softwareapplication", "webapplication", "mobileapplication", "apireference"}
-ECOM_SCHEMA = {"product", "aggregateoffer", "onlinestore", "offercatalog"}
+ECOM_SCHEMA = {"product", "aggregateoffer", "onlinestore"}
 PUB_SCHEMA = {"newsarticle", "blogposting", "blog", "techarticle", "liveblogposting"}
+
+ADDRESS_RE = re.compile(
+    r"\b\d{1,6}\s+[A-Za-z][A-Za-z.'\- ]{2,40}\b"
+    r"(street|st|road|rd|avenue|ave|boulevard|blvd|drive|dr|lane|ln|way|court|ct"
+    r"|place|pl|highway|hwy|parkway|pkwy|turnpike|pike|circle|cir|square|sq)\b", re.I)
+US_PHONE_RE = re.compile(r"(\(\d{3}\)\s*|\b\d{3}[.\-\s])\d{3}[.\-\s]?\d{4}\b")
+US_ZIP_RE = re.compile(r"\b[A-Z]{2}\s+\d{5}(-\d{4})?\b")
+
+# Trades and practices people visit in person. On their own these say little;
+# with an address on the page they settle it.
+PRACTICE_WORDS = (
+    "dentist", "dental", "orthodont", "periodont", "chiropract", "physical therapy",
+    "attorney", "law firm", "lawyer", "injury", "clinic", "practice", "physician",
+    "veterinar", "salon", "barber", "spa", "hvac", "heating and air", "plumbing",
+    "roofing", "landscap", "auto repair", "collision", "tire", "pediatric",
+    "optometr", "dermatolog", "urgent care", "med spa", "wellness center",
+)
 
 TEXT_SIGNALS = [
     ("local", 1.2, [
+        "reservations", "order online", "our menu", "view menu", "takeout",
+        "dine-in", "catering menu", "byob", "happy hour", "daily specials",
         "opening hours", "store hours", "hours of operation", "our location",
         "get directions", "book an appointment", "walk-ins", "same-day service",
         "free estimate", "call us today", "serving the", "visit our showroom",
@@ -357,6 +427,21 @@ def classify_vertical(jsonld_types: list[str], body_lower: str,
     if "postaladdress" in types or "openinghoursspecification" in types:
         scores["local"] += 3.0
         evidence.append("address/opening-hours schema")
+
+    # A visible street address plus a phone number: a place you can walk into.
+    has_address = bool(ADDRESS_RE.search(body_lower) or US_ZIP_RE.search(body_lower.upper()))
+    has_phone = bool(US_PHONE_RE.search(body_lower))
+    if has_address and has_phone:
+        scores["local"] += 3.0
+        evidence.append("street address and phone number on the page")
+    elif has_address:
+        scores["local"] += 1.5
+        evidence.append("street address on the page")
+
+    practice = next((w for w in PRACTICE_WORDS if w in body_lower), None)
+    if practice and (has_address or has_phone):
+        scores["local"] += 2.5
+        evidence.append(f"“{practice}” with contact details")
     if gbp_link:
         scores["local"] += 3.0
         evidence.append("Google Business Profile link")
@@ -374,9 +459,18 @@ def classify_vertical(jsonld_types: list[str], body_lower: str,
 
 
 def is_gbp_link(href: str) -> bool:
+    """
+    Does this link point at a Google Business Profile?
+
+    Covers the short links Google itself hands out (goo.gl/maps, maps.app.goo.gl)
+    and the embed URL used by an embedded map, both of which owners use far more
+    often than the long canonical form.
+    """
     h = href.lower()
     return ("maps.google" in h or "google.com/maps" in h or "g.page" in h
-            or "search.google.com/local" in h or "g.co/kgs" in h)
+            or "search.google.com/local" in h or "g.co/kgs" in h
+            or "goo.gl/maps" in h or "maps.app.goo.gl" in h
+            or "google.com/maps/embed" in h)
 
 
 class PageParser(HTMLParser):
@@ -486,10 +580,12 @@ class PageParser(HTMLParser):
         if self._in_jsonld and self.jsonld_raw:
             self.jsonld_raw[-1] += data
             return
-        if self.skip_depth:
-            return
+        # <title> sits inside <head>, which is a skipped tag — so this must be
+        # checked before the skip guard or the title is silently thrown away.
         if self.in_title:
             self.title += data
+        if self.skip_depth:
+            return
         if self.heading_level:
             self.heading_buf.append(data)
         if self.in_p:
@@ -643,8 +739,31 @@ def analyze(url: str, vertical: str | None = None) -> Result | str:
         url = "https://" + url
 
     page = fetch(url)
+
+    # Some sites refuse anything that identifies itself as a crawler. Retry
+    # once as an ordinary browser: if that works, the site is reachable but
+    # hostile to automated readers — which is a finding in its own right,
+    # because AI crawlers are turned away by the same rule.
+    turned_away_bots = False
+    if (not page.ok and page.status in (401, 403, 406, 418, 429, 503)) or \
+       (page.ok and looks_like_challenge(page.body)):
+        retry = fetch(url, ua=BROWSER_UA)
+        if retry.ok and not looks_like_challenge(retry.body):
+            page = retry
+            turned_away_bots = True
+
     if not page.ok:
-        return f"Could not download {url} — {page.error or 'unknown error'}. Check the address and try again."
+        reason = ("blocked" if page.status in (401, 403, 406, 418) else
+                  "rate-limited" if page.status == 429 else
+                  "unavailable" if page.status and page.status >= 500 else
+                  "not-found" if page.status == 404 else "unreachable")
+        return (f"Could not read {url} — {page.error or 'unknown error'} ({reason}). "
+                "If the site is up in a browser, its firewall is refusing automated "
+                "readers, which means AI crawlers are very likely refused too.")
+    if looks_like_challenge(page.body):
+        return (f"Could not read {url} — the site returned a bot-check page instead of "
+                "the content (challenge). AI crawlers hit the same wall, so this page "
+                "cannot currently be cited by them.")
 
     parsed = urllib.parse.urlparse(page.final_url)
     host = parsed.netloc.lower()
@@ -654,6 +773,17 @@ def analyze(url: str, vertical: str | None = None) -> Result | str:
         p.feed(page.body)
     except Exception:
         pass  # tolerate broken HTML; keep whatever was parsed
+
+    # Refuse to grade a page we plainly did not receive. Scoring an empty or
+    # intercepted response produces an F and a fix list telling the owner to
+    # add things their page already has — worse than no answer at all.
+    _words = sum(len(c.split()) for c in p.text_chunks)
+    if _words < 50 and not p.headings and not p.title.strip():
+        return (f"Could not read {page.final_url} the way an AI crawler would — "
+                f"the response contained no readable text, headings or title "
+                f"({_words} words). The page may be behind a firewall or served "
+                "only to browsers. It has not been scored, because a score from "
+                "an empty response would be meaningless.")
 
     # robots.txt
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
@@ -669,15 +799,20 @@ def analyze(url: str, vertical: str | None = None) -> Result | str:
     checks = res.checks
 
     # ---------------- GEO pillar A: ACCESS (30 pts) ----------------
-    cite_allowed = cite_total = len(CITATION_BOTS)
+    # The page we actually scanned — a rule about /wp-admin/ says nothing
+    # about whether this page is reachable.
+    scanned_path = urllib.parse.urlparse(res.final_url).path or "/"
+
+    cite_total = len(CITATION_BOTS)
     cite_allowed = 0
     for bot, role in CITATION_BOTS:
-        status = bot_access(groups, bot) if robots.ok else "allowed"
-        if status == "allowed":
+        status = bot_access(groups, bot, scanned_path) if robots.ok else "allowed"
+        # 'partial' means this page is reachable but some other path is not.
+        if status in ("allowed", "partial"):
             cite_allowed += 1
         res.crawler_rows.append((bot, role, "Citation", status))
     for bot, role in TRAINING_BOTS:
-        status = bot_access(groups, bot) if robots.ok else "allowed"
+        status = bot_access(groups, bot, scanned_path) if robots.ok else "allowed"
         res.crawler_rows.append((bot, role, "Training", status))
 
     access_pts = 30 * (cite_allowed / cite_total)
@@ -685,15 +820,30 @@ def analyze(url: str, vertical: str | None = None) -> Result | str:
     checks.append(Check(
         "GEO · Access", "AI citation crawlers allowed",
         round(access_pts, 1), 30,
-        (f"{cite_allowed} of {cite_total} citation crawlers can reach the site"
+        (f"{cite_allowed} of {cite_total} citation crawlers can reach this page"
          + (f" (robots.txt blocks: {', '.join(blocked_bots)})" if blocked_bots else "")
          + ("" if robots.ok else " — no robots.txt found, so everything is allowed by default")),
-        fix=("Edit robots.txt so citation crawlers (OAI-SearchBot, ChatGPT-User, Claude-SearchBot, "
-             "Claude-User, PerplexityBot, Perplexity-User) are allowed. These fetch pages to answer "
-             "real user questions — blocking them removes the site from AI answers entirely. You can "
-             "still block training-only bots separately if you wish.") if blocked_bots else "",
+        fix=("Add these lines to robots.txt, above any existing rules:\n\n"
+             + "\n".join(f"User-agent: {b}\nAllow: /\n" for b in blocked_bots)
+             + "\nThese crawlers fetch pages to answer real user questions — blocking them "
+               "removes the site from AI answers entirely. Training-only bots (GPTBot, "
+               "ClaudeBot, Google-Extended) can still be blocked separately if you wish."
+             ) if blocked_bots else "",
         priority="High" if blocked_bots else "",
     ))
+
+    if turned_away_bots:
+        checks.append(Check(
+            "GEO · Access", "Firewall turns away automated readers", 0, 0,
+            "The site refused a request that identified itself as a crawler, and "
+            "answered only when the scan pretended to be a browser",
+            fix="Your firewall or bot protection (Cloudflare, Sucuri, or similar) is "
+                "challenging automated readers. AI citation crawlers are refused by the "
+                "same rule and cannot quote pages they cannot fetch. Ask whoever manages "
+                "the site to allow OAI-SearchBot, Claude-SearchBot and PerplexityBot "
+                "through the firewall — this is separate from robots.txt.",
+            priority="High",
+        ))
 
     https_pts = 5 if page.https else 0
     checks.append(Check(
@@ -714,8 +864,12 @@ def analyze(url: str, vertical: str | None = None) -> Result | str:
         round(word_pts, 1), 20,
         f"{words} words of visible text in the raw HTML"
         + (" — this looks like a JavaScript-rendered app; crawlers that don't run JS may see almost nothing" if spa else ""),
-        fix=("Server-render or pre-render the page so the main content is present in the raw HTML. "
-             "Most AI crawlers do not execute JavaScript — content that only appears after JS runs is invisible to them."
+        fix=(("Server-render or pre-render the page so the main content is present in the raw "
+              "HTML. Most AI crawlers do not execute JavaScript — content that only appears "
+              "after JS runs is invisible to them.") if spa else
+             ("Add at least 300 words of real content to this page. There is very little text "
+              "for an assistant to quote: cover what you do, who you serve and where, in "
+              "sentences someone could lift straight into an answer.")
              ) if words < 300 else "",
         priority="High" if words < 300 else "",
     ))
@@ -768,10 +922,16 @@ def analyze(url: str, vertical: str | None = None) -> Result | str:
         priority="" if title_ok else "Medium",
     ))
     checks.append(Check(
-        "GEO · Identity", "Meta description", 5 if desc_ok else (2 if desc else 0), 5,
+        "GEO · Identity", "Meta description",
+        5 if desc_ok else (4 if 170 < len(desc) <= 200 else (2 if desc else 0)), 5,
         f"Description is {len(desc)} characters" if desc else "No meta description",
-        fix="" if desc_ok else "Add a 50–170 character meta description that answers “what is this page?” in one sentence.",
-        priority="" if desc_ok else "Medium",
+        fix="" if desc_ok else (
+            # A description that exists but runs slightly long is a nitpick,
+            # not a problem worth an owner's attention.
+            f"Trim the meta description to 170 characters or fewer (it is {len(desc)})."
+            if 170 < len(desc) <= 200 else
+            "Add a 50–170 character meta description that answers “what is this page?” in one sentence."),
+        priority="" if desc_ok else ("Low" if 170 < len(desc) <= 200 else "Medium"),
     ))
     checks.append(Check(
         "GEO · Identity", "Canonical URL", 5 if p.canonical else 0, 5,
@@ -954,12 +1114,13 @@ def analyze(url: str, vertical: str | None = None) -> Result | str:
                  "signals — aim for a steady trickle, not a burst."),
             priority="" if total >= 50 else ("High" if total < 20 else "Medium"),
         ))
-    elif local_like:
+    elif local_like and os.environ.get("GOOGLE_PLACES_API_KEY"):
+        # Only shown when the lookup actually ran and found nothing. Without a
+        # key there is no finding to report — a customer should never be shown
+        # our own configuration notes.
         checks.append(Check(
             "Reviews", "Live Google rating & volume", 0, 0,
-            ("Google Places lookup found no match for this business" if os.environ.get("GOOGLE_PLACES_API_KEY")
-             else "Not connected — set GOOGLE_PLACES_API_KEY to score the live rating and review count "
-                  "(free key at console.cloud.google.com, see the script's notes)"),
+            "Google Places lookup found no match for this business",
         ))
 
     # ================= SOCIAL (the footprint AI engines connect) =========
