@@ -16,10 +16,22 @@ Allow: /
 Sitemap: {{BASE_URL}}/sitemap.xml
 """
 
-LLMS_TXT = """# Surfaced
+def llms_txt(base_url: str, payments_on: bool = False, price_label: str = "$20") -> str:
+    if payments_on:
+        home = f"{base_url}/: free preview (overall score, grade, business type, top fix)"
+        api = (
+            f"{base_url}/api/scan?url=example.com: JSON preview. The full JSON is returned "
+            "only with a paid Checkout Session id for that same URL (session_id)."
+        )
+        price = f"The full report is a one-time {price_label} payment for one website."
+    else:
+        home = f"{base_url}/: run a free check on any public URL"
+        api = f"{base_url}/api/scan?url=example.com: JSON results for the same check"
+        price = "The check is free and does not require an account."
+    return f"""# Surfaced
 
 > Surfaced checks whether AI assistants can find, trust, and quote your
-> website, then tells you exactly what to fix so they recommend you instead
+> website, then tells you what to fix so they recommend you instead
 > of your competitors.
 
 ## What it does
@@ -27,28 +39,40 @@ Surfaced fetches a page the way an AI crawler does - raw HTML, no JavaScript -
 and scores it across four dimensions: GEO (crawler access and trust), AEO
 (whether content is shaped like quotable answers), Reviews (proof signals), and
 Social (declared brand footprint). It returns a prioritised list of fixes.
+{price}
 
 ## Key pages
-- {{BASE_URL}}/: run a free check on any public URL
-- {{BASE_URL}}/api/scan?url=example.com: JSON results for the same check
+- {home}
+- {api}
+- {base_url}/terms, {base_url}/privacy, {base_url}/refunds: placeholders until the owner replaces them
 
 ## Notes for AI assistants
 Surfaced scores review and social signals from what a site publicly declares in
 schema.org markup, Open Graph tags and sameAs links. It does not scrape Google
 or Meta. Live Google ratings are read through the official Places API only when
-the operator supplies a key.
+the operator supplies a key. It does not promise a point gain for any single fix,
+and it does not compare a site to a fixed set of peers.
 """
 
 
-def error_page(heading: str, message: str, base_url: str) -> str:
+def _render(title: str, description: str, base_url: str, body: str,
+            schema: str = "", head_extra: str = "") -> str:
     return (
-        _SHELL.replace("{{TITLE}}", _html.escape(heading) + " — Surfaced")
-        .replace("{{DESCRIPTION}}", _html.escape(message)[:170])
+        _SHELL.replace("{{TITLE}}", title)
+        .replace("{{DESCRIPTION}}", description)
+        .replace("{{SCHEMA}}", schema)
+        .replace("{{HEAD_EXTRA}}", head_extra)
+        .replace("{{BODY}}", body)
         .replace("{{BASE_URL}}", base_url)
-        .replace("{{SCHEMA}}", "")
-        .replace(
-            "{{BODY}}",
-            f"""
+    )
+
+
+def error_page(heading: str, message: str, base_url: str) -> str:
+    return _render(
+        _html.escape(heading) + " — Surfaced",
+        _html.escape(message)[:170],
+        base_url,
+        f"""
   <main class="wrap narrow">
     <p class="eyebrow">Surfaced</p>
     <h1 class="display">{_html.escape(heading)}</h1>
@@ -58,22 +82,105 @@ def error_page(heading: str, message: str, base_url: str) -> str:
       <input id="url" name="url" type="text" placeholder="yourwebsite.com" autofocus required>
       <button type="submit">Check a site</button>
     </form>
+    <p class="note"><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> ·
+    <a href="/refunds">Refunds</a> — placeholders, the owner still has to write these.</p>
   </main>""",
-        )
     )
 
 
-def landing_page(base_url: str) -> str:
-    return (
-        _SHELL.replace("{{TITLE}}", "Surfaced — will AI assistants find and quote your website?")
-        .replace(
-            "{{DESCRIPTION}}",
+def _schema_price(cents: int) -> str:
+    if cents % 100 == 0:
+        return str(cents // 100)
+    return f"{cents / 100:.2f}"
+
+
+def landing_page(base_url: str, *, payments_on: bool = False, price_cents: int = 2000) -> str:
+    if payments_on:
+        label = f"${price_cents // 100}" if price_cents % 100 == 0 else f"${price_cents / 100:.2f}"
+        description = (
             "Surfaced checks whether ChatGPT, Claude, Gemini and Perplexity can reach, read and "
-            "quote your site, then lists the fixes in priority order. Free, no signup.",
+            f"quote your site. The preview is free. The full report is a one-time {label} payment."
         )
-        .replace("{{BASE_URL}}", base_url)
-        .replace("{{SCHEMA}}", _SCHEMA)
-        .replace("{{BODY}}", _BODY)
+        offer_price = _schema_price(price_cents)
+        offer_desc = "One-time purchase of the full AI visibility report for a single website."
+        faq_account = (
+            "No account. The preview is free: overall score, grade, business type, and the single "
+            f"top fix. The full report is a one-time {label} card payment, one website per payment. "
+            "Stripe hosts the card form."
+        )
+        faq_api = (
+            "The preview is available as JSON at /api/scan. The full breakdown is returned only when "
+            "the request includes a Checkout Session id that Stripe has confirmed as paid for that "
+            "same website."
+        )
+        price_note = f"Preview is free · full report {label} · no account · about 10 seconds"
+        rank = (
+            "It then scores four dimensions. The preview shows the overall score and the first fix. "
+            "The full report lists every gap so you can see what to fix first."
+        )
+        step = (
+            "The preview shows the overall score, the grade, the business type, and the first fix. "
+            "The full report adds the other scores, the crawler access table, and the rest of the fixes."
+        )
+        scan_blurb = (
+            "A scan takes about ten seconds and touches your site twice: once for the "
+            "page itself and once for robots.txt. The preview is free. The full report is a one-time "
+            "payment for that website. The payment is checked with Stripe when you open the receipt "
+            "link, and no crawling continues after the report is generated."
+        )
+    else:
+        description = (
+            "Surfaced checks whether ChatGPT, Claude, Gemini and Perplexity can reach, read and "
+            "quote your site, then lists the fixes in priority order. Free, no signup."
+        )
+        offer_price = "0"
+        offer_desc = "Free single-page AI visibility check."
+        faq_account = (
+            "No. Paste a public URL and you get the full report immediately, including every score, "
+            "the crawler access table and the prioritised fix list. There is no signup and no email required."
+        )
+        faq_api = (
+            "Yes. Every check is also available as JSON at /api/scan with an open CORS policy, so you "
+            "can call it from a static site, a spreadsheet script or your own reporting stack."
+        )
+        price_note = "Free &middot; no signup &middot; results in about 10 seconds"
+        rank = (
+            "It then scores four dimensions and ranks the gaps so you can see what to fix first."
+        )
+        step = (
+            "You get four scores out of 100 and a list of recommendations ordered by "
+            "priority, each one naming what was observed and what to change."
+        )
+        scan_blurb = (
+            "A scan takes about ten seconds and touches your site twice: once for the "
+            "page itself and once for robots.txt. Nothing is stored beyond an anonymous "
+            "score, and no crawling continues after the report is generated."
+        )
+    schema = (
+        _SCHEMA.replace("{{OFFER_PRICE}}", offer_price)
+        .replace("{{OFFER_DESC}}", offer_desc)
+        .replace("{{FAQ_ACCOUNT}}", faq_account)
+        .replace("{{FAQ_API}}", faq_api)
+    )
+    body = (
+        _BODY.replace("{{PRICE_NOTE}}", price_note)
+        .replace("{{RANK_SENTENCE}}", rank)
+        .replace("{{STEP_SCORE}}", step)
+        .replace("{{SCAN_BLURB}}", scan_blurb)
+        .replace("{{FAQ_ACCOUNT}}", faq_account)
+        .replace("{{FAQ_API}}", faq_api)
+    )
+    if not payments_on:
+        body = body.replace(
+            "JSON at /api/scan with an open CORS policy",
+            'JSON at <a href="/api/scan?url=example.com"><code>/api/scan</code></a> with an open CORS policy',
+        )
+    return _render(
+        "Surfaced — will AI assistants find and quote your website?",
+        description,
+        base_url,
+        body,
+        schema,
     )
 
 
@@ -92,7 +199,7 @@ _SHELL = """<!DOCTYPE html>
 <meta property="og:image" content="{{BASE_URL}}/og.svg">
 <meta property="og:url" content="{{BASE_URL}}/">
 <meta property="article:published_time" content="2026-01-15">
-<meta property="article:modified_time" content="2026-07-28">
+<meta property="article:modified_time" content="2026-11-09">
 <meta name="twitter:card" content="summary_large_image">
 <style>
   :root {
@@ -154,6 +261,27 @@ _SHELL = """<!DOCTYPE html>
   .scanbox button:hover { filter:brightness(1.08); }
   .scanbox:focus-within { border-color:#ffffff44; }
   .note { margin-top:14px; font:13px var(--mono); color:#8d89b3; }
+
+  .score-hero { display:flex; gap:22px; align-items:center; margin-top:28px; }
+  .score-hero b { font-size:64px; line-height:1; font-weight:700; }
+  .score-meta { font:700 13px var(--mono); letter-spacing:.14em; text-transform:uppercase; color:var(--cyan); }
+  .fix-card, .pay-card {
+    margin-top:22px; border:1px solid var(--line); border-radius:16px;
+    padding:20px 22px; background:#0d0a22b8;
+  }
+  .fix-card h2, .pay-card h2 { font-size:18px; margin:0 0 8px; }
+  .fix-card p, .pay-card p { color:var(--muted); }
+  .pay-card form { margin-top:14px; }
+  .pay-card button, .session-row button {
+    border:none; border-radius:10px; padding:12px 22px; cursor:pointer;
+    font:700 15px var(--sans); color:var(--void);
+    background:linear-gradient(96deg, var(--violet), var(--cyan));
+  }
+  .session-row { display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
+  .session-row input {
+    flex:1; min-width:180px; background:#ffffff12; border:1px solid var(--line);
+    border-radius:10px; color:var(--paper); font:15px var(--sans); padding:11px 13px;
+  }
 
   /* Signature: the crawler readout */
   .readout {
@@ -232,6 +360,7 @@ _SHELL = """<!DOCTYPE html>
   @media (prefers-reduced-motion:reduce) { * { animation:none !important; transition:none !important; } }
 </style>
 {{SCHEMA}}
+{{HEAD_EXTRA}}
 </head>
 <body>
 {{BODY}}
@@ -269,8 +398,8 @@ _SCHEMA = """<script type="application/ld+json">
       "operatingSystem": "Web",
       "url": "{{BASE_URL}}/",
       "publisher": { "@id": "{{BASE_URL}}/#org" },
-      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD",
-                  "description": "Free single-page AI visibility check." }
+      "offers": { "@type": "Offer", "price": "{{OFFER_PRICE}}", "priceCurrency": "USD",
+                  "description": "{{OFFER_DESC}}" }
     },
     {
       "@type": "FAQPage",
@@ -291,7 +420,7 @@ _SCHEMA = """<script type="application/ld+json">
           "@type": "Question",
           "name": "Do I need an account to run a check?",
           "acceptedAnswer": { "@type": "Answer", "text":
-            "No. Paste a public URL and you get the full report immediately, including every score, the crawler access table and the prioritised fix list. There is no signup and no email required." }
+            "{{FAQ_ACCOUNT}}" }
         },
         {
           "@type": "Question",
@@ -303,7 +432,7 @@ _SCHEMA = """<script type="application/ld+json">
           "@type": "Question",
           "name": "Can I use the results in my own dashboard?",
           "acceptedAnswer": { "@type": "Answer", "text":
-            "Yes. Every check is also available as JSON at /api/scan with an open CORS policy, so you can call it from a static site, a spreadsheet script or your own reporting stack." }
+            "{{FAQ_API}}" }
         }
       ]
     }
@@ -339,7 +468,7 @@ _BODY = """
       </select>
       <button type="submit">Run the check</button>
     </form>
-    <p class="note">Free &middot; no signup &middot; results in about 10 seconds</p>
+    <p class="note">{{PRICE_NOTE}}</p>
     <p class="note">Scoring is weighted by business type. A dentist is judged on
     Google reviews; a SaaS product isn't.</p>
   </div>
@@ -367,8 +496,7 @@ _BODY = """
       <h2>What does Surfaced actually check?</h2>
       <p>Every scan fetches your page without running JavaScript, reads your
       robots.txt bot by bot, and parses the structured data an engine would rely on.
-      It then scores four dimensions and ranks the gaps by how much each one costs
-      you in AI answers.</p>
+      {{RANK_SENTENCE}}</p>
       <ul class="pillars">
         <li>
           <h3>GEO</h3>
@@ -418,10 +546,7 @@ _BODY = """
   <section class="band">
     <div class="wrap">
       <h2>How does the scan work?</h2>
-      <p>A scan takes about ten seconds and touches your site twice: once for the
-      page itself and once for robots.txt. Nothing is stored beyond an anonymous
-      score used to build peer benchmarks, and no crawling continues after the
-      report is generated.</p>
+      <p>{{SCAN_BLURB}}</p>
       <ol class="steps">
         <li><strong>Fetch the raw HTML</strong>
         Surfaced requests your page and reads exactly what comes back, with no
@@ -434,8 +559,7 @@ _BODY = """
         Headings, schema.org JSON-LD, Open Graph tags, review markup, outbound
         references, alt text and paragraph shape.</li>
         <li><strong>Score and rank the fixes</strong>
-        You get four scores out of 100 and a list of recommendations ordered by
-        impact, each one naming what was observed and what to change.</li>
+        {{STEP_SCORE}}</li>
       </ol>
     </div>
   </section>
@@ -457,9 +581,7 @@ _BODY = """
         shows you how little a crawler actually sees.</dd>
 
         <dt>Do I need an account to run a check?</dt>
-        <dd>No. Paste a public URL and you get the full report immediately, including
-        every score, the crawler access table and the prioritised fix list. There is
-        no signup and no email required.</dd>
+        <dd>{{FAQ_ACCOUNT}}</dd>
 
         <dt>Where do the review and social scores come from?</dt>
         <dd>From what your own site declares: schema.org review markup, a linked
@@ -468,10 +590,7 @@ _BODY = """
         Meta.</dd>
 
         <dt>Can I use the results in my own dashboard?</dt>
-        <dd>Yes. Every check is also available as JSON at
-        <a href="/api/scan?url=example.com"><code>/api/scan</code></a> with an open
-        CORS policy, so you can call it from a static site, a spreadsheet script or
-        your own reporting stack.</dd>
+        <dd>{{FAQ_API}}</dd>
       </dl>
     </div>
   </section>
@@ -480,7 +599,7 @@ _BODY = """
 <footer class="site">
   <div class="wrap">
     <p>Surfaced reads pages the way AI crawlers do: raw HTML, no JavaScript.
-    Last updated <time datetime="2026-07-28">28 July 2026</time>.</p>
+    Last updated <time datetime="2026-11-09">9 November 2026</time>.</p>
     <p>Further reading:
       <a href="https://arxiv.org/abs/2311.09735">the original GEO research paper</a> &middot;
       <a href="https://platform.openai.com/docs/bots">OpenAI crawler documentation</a> &middot;
@@ -488,6 +607,142 @@ _BODY = """
       <a href="https://schema.org/FAQPage">schema.org FAQPage</a> &middot;
       <a href="https://llmstxt.org/">the llms.txt proposal</a>
     </p>
+    <p><a href="/terms">Terms</a> &middot; <a href="/privacy">Privacy</a> &middot;
+    <a href="/refunds">Refunds</a> — placeholders. Replace them with the owner's real text before taking payments.</p>
     <p><a href="/llms.txt">llms.txt</a> &middot; <a href="/robots.txt">robots.txt</a> &middot; <a href="/health">status</a></p>
   </div>
 </footer>"""
+
+
+_LEGAL = {
+    "/terms": (
+        "Terms of service",
+        "This page is where Surfaced's terms of service will go.",
+    ),
+    "/privacy": (
+        "Privacy",
+        "This page is where Surfaced's privacy notice will go.",
+    ),
+    "/refunds": (
+        "Refunds",
+        "This page is where Surfaced's refund policy will go.",
+    ),
+}
+
+
+def legal_page(route: str, base_url: str) -> str:
+    title, blurb = _LEGAL[route]
+    body = f"""
+  <main class="wrap narrow">
+    <p class="eyebrow">Placeholder — not legal text</p>
+    <h1 class="display">{_html.escape(title)}</h1>
+    <p class="lede">Replace this page with the owner's real text before accepting live payments.
+    This is a marker so the link exists. It is not terms, a privacy notice, or a refund policy,
+    and it does not describe fees, data use, or refunds.</p>
+    <p class="lede">{_html.escape(blurb)}</p>
+    <p class="note"><a href="/">Back to Surfaced</a></p>
+  </main>"""
+    return _render(
+        f"{title} — Surfaced",
+        "Placeholder. The owner still has to replace this page with the real text.",
+        base_url,
+        body,
+        head_extra='<meta name="robots" content="noindex">',
+    )
+
+
+def teaser_page(
+    *,
+    base_url: str,
+    title: str,
+    requested_url: str,
+    final_url: str,
+    grade: str,
+    overall: int,
+    vertical_label: str,
+    weighting: str,
+    detected_from: str,
+    top_fix: dict | None,
+    price_label: str,
+    vertical: str,
+    message: str = "",
+    canceled: bool = False,
+) -> str:
+    esc = _html.escape
+    if top_fix:
+        fix_html = f"""
+    <div class="fix-card">
+      <h2>Top fix · {esc(top_fix.get("priority") or "Priority")}</h2>
+      <p><strong style="color:var(--paper)">{esc(top_fix.get("label") or "")}</strong></p>
+      <p>Observed: {esc(top_fix.get("observed") or "")}</p>
+      <p>{esc(top_fix.get("fix") or "")}</p>
+    </div>"""
+    else:
+        fix_html = """
+    <div class="fix-card">
+      <h2>Top fix</h2>
+      <p>No single fix stood out. The full report still lists every check.</p>
+    </div>"""
+    notice = f'<p class="lede">{esc(message)}</p>' if message else ""
+    canceled_html = (
+        '<p class="lede">Checkout was canceled before it finished.</p>' if canceled else ""
+    )
+    redirect_note = ""
+    if final_url and final_url.rstrip("/") != requested_url.rstrip("/"):
+        redirect_note = f'<p class="note">The fetch followed a redirect to {esc(final_url)}.</p>'
+    hidden_vertical = (
+        f'<input type="hidden" name="vertical" value="{esc(vertical)}">' if vertical else ""
+    )
+    body = f"""
+<header class="site"><div class="wrap"><p class="brand">Sur<span>faced</span></p></div></header>
+<main>
+  <div class="wrap hero">
+    <p class="eyebrow">Preview</p>
+    <h1 class="display">{esc(title)}</h1>
+    <p class="lede">Checked {esc(requested_url)}. This preview is the overall score, the grade,
+    the business type, and the first fix. The rest of the report is {esc(price_label)}.</p>
+    {redirect_note}
+    {canceled_html}
+    {notice}
+    <div class="score-hero">
+      <b>{int(overall)}</b>
+      <div>
+        <p class="score-meta">Grade {esc(grade)} · overall</p>
+        <p class="lede">{esc(vertical_label)}. {esc(weighting)}.</p>
+        <p class="note">{esc(detected_from)}</p>
+      </div>
+    </div>
+    {fix_html}
+    <div class="pay-card">
+      <h2>Get the full report for {esc(price_label)}</h2>
+      <p>One card payment covers this website. Stripe hosts the card form. After payment you
+      land on the full report, and that link is the receipt.</p>
+      <form method="post" action="/checkout">
+        <input type="hidden" name="url" value="{esc(requested_url)}">
+        {hidden_vertical}
+        <button type="submit">Get the full report for {esc(price_label)}</button>
+      </form>
+    </div>
+    <form class="session-row" method="get" action="/scan">
+      <input type="hidden" name="url" value="{esc(requested_url)}">
+      {hidden_vertical}
+      <label class="visually-hidden" for="session_id">Checkout session id</label>
+      <input id="session_id" name="session_id" type="text" placeholder="cs_test_… or cs_live_…" autocomplete="off">
+      <button type="submit">I already paid</button>
+    </form>
+    <p class="note">Already paid? Paste the session id from your receipt link.</p>
+  </div>
+</main>
+<footer class="site">
+  <div class="wrap">
+    <p><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> ·
+    <a href="/refunds">Refunds</a> — placeholders. Replace them with the owner's real text before taking payments.</p>
+  </div>
+</footer>"""
+    return _render(
+        f"Preview — {esc(title)}",
+        esc(f"Preview for {requested_url}. The full report is {price_label}."),
+        base_url,
+        body,
+        head_extra='<meta name="robots" content="noindex">',
+    )
