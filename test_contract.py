@@ -163,8 +163,13 @@ def main() -> int:
         failures.append("free scan must carry exactly the top fixes only")
     if free["recommendations_total"] != 7 or len(paid["recommendations"]) != 7:
         failures.append("paid scan must carry every fix")
-    if any(r["observed"] for r in free["recommendations"]):
-        failures.append("free scan must not carry observations")
+    if free["summary"] or free["crawlers"] or "SAMPLE fix" in str(free):
+        failures.append("free scan must carry scores only")
+    html = studio.render_report(many, full=False)
+    if "SAMPLE fix" in html or "SAMPLE observed" in html:
+        failures.append("free HTML preview leaks findings")
+    if "SAMPLE fix text 6" not in studio.render_report(many, full=True):
+        failures.append("full HTML report lost its fixes")
     check_error_shape()
     check_no_drift()
 

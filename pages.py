@@ -286,7 +286,7 @@ _SCHEMA = """<script type="application/ld+json">
       "publisher": { "@id": "{{BASE_URL}}/#org" },
       "offers": [
         { "@type": "Offer", "price": "0", "priceCurrency": "USD",
-          "description": "Free single-page AI visibility check: scores and the top 3 fixes." },
+          "description": "Free single-page AI visibility check: grade and four scores." },
         { "@type": "Offer", "price": "19.99", "priceCurrency": "USD",
           "description": "Full report, one-time purchase: every fix in priority order. Introductory price; regular price $49.99." }
       ]
@@ -366,8 +366,8 @@ _BODY = """
         <p class="price-row"><s class="price-was" aria-label="Regular price $49.99">$49.99</s>
           <span class="price-now">$19.99</span>
           <span class="price-tag">Introductory offer</span></p>
-        <p class="price-sub">The free check shows your scores and top 3 fixes. The full
-        report lists every fix in priority order, with what we found on your page.
+        <p class="price-sub">The free check shows your grade and four scores. The full report adds
+        every fix in priority order, the score breakdown and AI crawler access.
         No subscription.</p>
       </div>
       <button type="button" id="buy" class="price-buy">Get the full report</button>

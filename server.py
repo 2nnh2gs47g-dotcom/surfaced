@@ -160,14 +160,14 @@ scan_slots = threading.Semaphore(MAX_CONCURRENT_SCANS)
 # ---------------------------------------------------------------------------
 
 
-FREE_FIXES = 3
+FREE_FIXES = 0      # the free preview shows scores only
 
 
 def result_to_dict(res: studio.Result, full: bool = False) -> dict:
     """
-    The JSON contract the app reads. A free scan carries the scores and the
-    top FREE_FIXES fixes; the full fix list, with observations, is the paid
-    part, so it is cut here on the server — never merely hidden in the app.
+    The JSON contract the app reads. A free scan carries the grade and the
+    four scores only; the summary, crawler table and fix list are the paid
+    part, so they are cut here on the server — never merely hidden in the app.
     """
     overall = studio.overall_score(res)
     recs = [
@@ -185,7 +185,7 @@ def result_to_dict(res: studio.Result, full: bool = False) -> dict:
         "checked_at": res.fetched_at,
         "word_count": res.word_count,
         "javascript_rendered": res.spa_warning,
-        "summary": res.summary,
+        "summary": res.summary if full else "",
         "grade": studio.grade(overall)[0],
         "vertical": {
             "key": res.vertical,
@@ -207,7 +207,7 @@ def result_to_dict(res: studio.Result, full: bool = False) -> dict:
         "crawlers": [
             {"bot": bot, "role": role, "kind": kind, "status": status}
             for bot, role, kind, status in res.crawler_rows
-        ],
+        ] if full else [],
     }
 
 

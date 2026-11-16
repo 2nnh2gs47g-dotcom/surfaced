@@ -244,7 +244,7 @@ async function refreshCredits() {
 }
 function drawKey() {
   const k = getKey();
-  $('#keystate').textContent = !k ? 'Free check: scores and your top 3 fixes.'
+  $('#keystate').textContent = !k ? 'Free check: your grade and four scores.'
     : credits === null ? 'Scan key saved on this device.'
     : credits > 0 ? `Scan key saved. ${credits} full report${credits === 1 ? '' : 's'} left.`
     : 'Scan key saved, but no full reports left.';
@@ -326,8 +326,7 @@ function render(d) {
     ${d.javascript_rendered ? '<p class="msg" style="margin-top:16px">Most of this page is built by JavaScript, so a crawler sees far less than a visitor does.</p>' : ''}
     ${d.summary ? `<p class="why">${esc(d.summary)}</p>` : ''}
     ${fixes ? `<h2>${d.full_report ? 'Every fix, in order' : 'Fix these first'}</h2><ol>${fixes}</ol>` : ''}
-    ${!d.full_report && d.recommendations_total > (d.recommendations || []).length
-      ? `<div class="lock">${d.recommendations_total - d.recommendations.length} more fix(es) and what we observed on your page are in the full report. Use <b>Unlock full reports</b> above.</div>` : ''}
+    ${!d.full_report ? `<div class="lock">${d.recommendations_total ? d.recommendations_total + ' prioritized fix' + (d.recommendations_total === 1 ? '' : 'es') + ', the' : 'The'} summary and AI crawler access are in the full report. Use <b>Unlock full report</b> above.</div>` : ''}
     <p class="gsub">${d.word_count.toLocaleString()} words visible to crawlers${
       v.detected_from ? ' &middot; business type ' + esc(v.detected_from) : ''}</p>`;
 }
