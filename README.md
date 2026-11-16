@@ -305,3 +305,10 @@ python3 prospect_scan.py                              # batch scan urls.txt
 - **Save as PDF.** A button on the full report opens the browser's print window; print styles are built in.
 - **Revisit.** Each paid run stores its full report. `/reports` lists a key's reports; `POST /report` reopens one. Reopening is free. The key travels in a header or form body, never in a URL.
 - Tests: `test_billing` 41 (adds reopen and wrong-key checks).
+
+## Release 3.2 — purchase email and direct links (16 Nov)
+
+- **Confirmation email** (`mailer.py`) goes out once per payment from the webhook, from `Surfaced <surfaced@patnaiq.com>`, with the scan key and two links.
+- **Direct links:** `/app#k=<key>` and `/reports#k=<key>` work without typing the key. The key sits after the `#`, which browsers never send to a server.
+- **Setup:** set `RESEND_API_KEY`, or `SMTP_HOST` / `SMTP_USER` / `SMTP_PASS` (`SMTP_PORT` defaults to 587), in Render. With neither set, no email is sent and everything else still works.
+- Tests: `python3 test_mail.py` (14 checks, no real email sent).

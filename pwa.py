@@ -446,6 +446,9 @@ $('#buy').addEventListener('click', async () => {
     $('#keymsg').textContent = d.error || 'Checkout is unavailable right now.';
   } catch (e) { $('#keymsg').textContent = 'Could not reach checkout. Try again.'; }
 });
+// A link from the confirmation email carries the key after the #.
+const hk = (location.hash.match(/[#&]k=(sfd_[A-Za-z0-9_-]{20,})/) || [])[1];
+if (hk) { setKey(hk); history.replaceState(null, '', location.pathname); }
 refreshCredits();
 
 const net = () => document.body.classList.toggle('is-offline', !navigator.onLine);

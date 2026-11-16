@@ -540,7 +540,7 @@ _BODY = """
 </footer>"""
 
 
-def paid_page(key: str, credits: int, base_url: str) -> str:
+def paid_page(key: str, credits: int, base_url: str, emailed: str = "") -> str:
     """
     Shown once, after Stripe confirms payment.
 
@@ -566,12 +566,15 @@ def paid_page(key: str, credits: int, base_url: str) -> str:
     </p>
     <p class="note">{credits} scan credit{"" if credits == 1 else "s"} available.</p>
 
-    <p class="lede" style="margin-top:30px"><a href="/app" id="open">Open the app</a>.
-    This device has been set up automatically: the key is saved here, so the app
-    will use it without pasting. On another device, paste the key into the app
-    under <em>Scan key</em>.</p>
-    <p class="note">After you run your check, the full report can be saved as a PDF and
-    reopened any time at <a href="/reports">Your reports</a> with this key.</p>
+    {f'<p class="note">A confirmation with this key and your links has been emailed to {_html.escape(emailed)}. Check spam if it has not arrived in a few minutes.</p>' if emailed else ''}
+
+    <p class="lede" style="margin-top:30px"><strong>1.</strong>
+    <a href="/app#k={_html.escape(key)}">Run your check</a>. The key is filled in for you.</p>
+    <p class="lede"><strong>2.</strong>
+    <a href="/reports#k={_html.escape(key)}">View your reports</a> any time. Bookmark this
+    link: it opens your reports directly, and each one can be saved as a PDF.</p>
+    <p class="note">Anyone with the key or these links can use your credit and see your
+    reports, so share them only with people you want to have access.</p>
     <p class="note">If the credit count reads 0, Stripe's confirmation is still
     in flight. Reload in a few seconds — this link stays valid.</p>
     <script>
@@ -614,6 +617,14 @@ def reports_page(base_url: str) -> str:
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); };
   var k = document.getElementById('k'), msg = document.getElementById('msg'), list = document.getElementById('list');
   try { k.value = localStorage.getItem('surfaced.key') || ''; } catch (e) {}
+  // A link from the confirmation email carries the key after the #, which
+  // browsers never send to a server. Use it, then take it out of the address bar.
+  var hk = (location.hash.match(/[#&]k=(sfd_[A-Za-z0-9_-]{20,})/) || [])[1];
+  if (hk) {
+    k.value = hk;
+    try { localStorage.setItem('surfaced.key', hk); } catch (e) {}
+    history.replaceState(null, '', location.pathname);
+  }
   async function show() {
     var key = k.value.trim(); if (!key) return;
     msg.textContent = 'Looking up your reports\u2026'; list.innerHTML = '';

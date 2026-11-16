@@ -44,6 +44,7 @@ import ai_visibility_studio as studio
 from pages import landing_page, LLMS_TXT, ROBOTS_TXT, error_page, paid_page, reports_page
 from pwa import APP_SHELL, MANIFEST, SERVICE_WORKER
 import billing
+import mailer
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -521,7 +522,7 @@ class Surfaced(BaseHTTPRequestHandler):
 
         event_id, object_id, email, credits = mapped
         try:
-            billing.grant_credits(
+            key, granted = billing.grant_credits(
                 ledger(), event_id=event_id, object_id=object_id, email=email,
                 credits=credits, access_key=access_key_for(object_id),
                 payment_intent=billing.payment_intent_of(event))
@@ -529,6 +530,10 @@ class Surfaced(BaseHTTPRequestHandler):
             # A real failure: let Stripe retry rather than losing the payment.
             self.send_json({"error": "Could not record the payment."}, 500)
             return
+        # Only the first delivery grants, so the buyer gets exactly one email
+        # however many times Stripe redelivers the event.
+        if granted:
+            mailer.send_purchase_async(email, key, credits, BASE_URL)
         self.send_json({"received": True})
 
     def handle_report(self) -> None:
@@ -582,7 +587,10 @@ class Surfaced(BaseHTTPRequestHandler):
 
         key = access_key_for(session.get("id", session_id))
         credits = billing.balance_of(ledger(), key)
-        self.send_body(paid_page(key, credits, BASE_URL))
+        email = (session.get("customer_details") or {}).get("email") or ""
+        emailed = email if (mailer.configured() and mailer.valid_address(email)) else ""
+        self.send_body(paid_page(key, credits, BASE_URL, emailed),
+                       extra_headers={"Cache-Control": "no-store"})
 
     def handle_scan(self, target: str, as_json: bool, vertical: str = "") -> None:
         if not target:

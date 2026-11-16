@@ -25,6 +25,18 @@ services:
         sync: false
       - key: STRIPE_PRICE_ID
         sync: false
+      # Purchase confirmation email. Set RESEND_API_KEY, or the three SMTP_
+      # values for a mailbox. Without either, no email is sent.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SURFACED_EMAIL_FROM
+        value: "Surfaced <surfaced@patnaiq.com>"
       - key: SURFACED_CREDITS_PER_PURCHASE
         value: "1"
       # The credit ledger MUST live on the persistent disk below. On the
