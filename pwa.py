@@ -213,10 +213,14 @@ APP_SHELL = """<!DOCTYPE html>
   </div>
   <button class="retry" id="buy" type="button">Unlock full report — $19.99</button>
   <button class="retry" id="keytoggle" type="button">I have a scan key</button>
+  <a class="retry" href="/reports" style="text-decoration:none">My reports</a>
   <div class="why" id="keymsg"></div>
 </div>
 
 <div id="out" role="status" aria-live="polite"></div>
+<form id="openrep" method="post" action="/report" target="_blank" hidden>
+  <input type="hidden" name="key" id="orkey"><input type="hidden" name="id" id="orid">
+</form>
 
 <div class="hist" id="hist" hidden>
   <h2>Recent checks</h2>
@@ -325,6 +329,8 @@ function render(d) {
     </div>
     ${d.javascript_rendered ? '<p class="msg" style="margin-top:16px">Most of this page is built by JavaScript, so a crawler sees far less than a visitor does.</p>' : ''}
     ${d.summary ? `<p class="why">${esc(d.summary)}</p>` : ''}
+    ${d.full_report && d.report_id ? `<p style="margin-top:18px"><button class="go" id="openfull" data-id="${esc(d.report_id)}" type="button">Open the full report</button></p>
+      <p class="gsub">Step-by-step developer instructions and code for every fix. Save it as a PDF from there, or reopen it later under <a href="/reports" style="color:inherit">Your reports</a>.</p>` : ''}
     ${fixes ? `<h2>${d.full_report ? 'Every fix, in order' : 'Fix these first'}</h2><ol>${fixes}</ol>` : ''}
     ${!d.full_report ? `<div class="lock">${d.recommendations_total ? d.recommendations_total + ' prioritized fix' + (d.recommendations_total === 1 ? '' : 'es') + ', the' : 'The'} summary and AI crawler access are in the full report. Use <b>Unlock full report</b> above.</div>` : ''}
     <p class="gsub">${d.word_count.toLocaleString()} words visible to crawlers${
@@ -406,6 +412,9 @@ async function scan(url, vertical) {
 }
 
 $('#out').addEventListener('click', e => {
+  if (e.target.id === 'openfull') {
+    $('#orkey').value = getKey(); $('#orid').value = e.target.dataset.id; $('#openrep').submit(); return;
+  }
   if (e.target.id === 'retry' && lastAttempt) { lastAttempt.retry = true; scan(lastAttempt.url, lastAttempt.vertical); }
 });
 

@@ -259,6 +259,24 @@ check("an unknown payment intent is ignored", billing.revoke_for_refund(conn, "e
 
 
 # ---------------------------------------------------------------------------
+print("\nRevisiting — a paid report can be reopened, only by its own key")
+# ---------------------------------------------------------------------------
+conn, _ = fresh_db()
+key, _ = billing.grant_credits(conn, event_id="e9", object_id="o9", email=None, credits=1)
+other, _ = billing.grant_credits(conn, event_id="e10", object_id="o10", email=None, credits=1)
+r = billing.reserve(conn, key, "i9", "https://example.com")
+billing.commit_run(conn, r.run_id, json.dumps({"url": "https://example.com", "scores": {"overall": 70},
+                                               "grade": "B"}), "<html>FULL</html>")
+reps = billing.list_reports(conn, key)
+check("the buyer's key lists the report", len(reps) == 1 and reps[0]["score"] == 70 and reps[0]["available"])
+check("the buyer's key reopens it", billing.get_report(conn, key, r.run_id) == "<html>FULL</html>")
+check("reopening spends no credit", billing.balance_of(conn, key) == 0
+      and billing.get_report(conn, key, r.run_id) is not None)
+check("another key cannot list it", billing.list_reports(conn, other) == [])
+check("another key cannot open it", billing.get_report(conn, other, r.run_id) is None)
+check("a wrong key cannot open it", billing.get_report(conn, "sfd_guess", r.run_id) is None)
+
+# ---------------------------------------------------------------------------
 print()
 if failed:
     print(f"{len(failed)} FAILURE(S):")

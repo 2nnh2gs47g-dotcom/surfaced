@@ -1419,18 +1419,53 @@ def render_report(res: Result, full: bool = True, free_fixes: int = 3) -> str:
     hidden = 0 if full else max(0, len(recs) - free_fixes)
     if not full:
         recs = recs[:free_fixes]
+    try:
+        import guide as _guide
+    except ImportError:                     # the single-file CLI still works
+        _guide = None
+    _dom = urllib.parse.urlparse(res.final_url or res.url).netloc or res.url
+    _name = re.split(r"\s+[-|–—:]\s+", res.site_title or _dom)[0].strip() or _dom
+    _name_js = json.dumps(_name)[1:-1]
+    plan_rows = ""
     for i, c in enumerate(recs, 1):
         pcolor = {"High": "#dc2626", "Medium": "#d97706", "Low": "#64748b"}.get(c.priority, "#64748b")
+        g = _guide.guidance_for(c.label) if (_guide and full) else None
+        gain = round(c.possible - c.earned, 1)
+        extra = ""
+        if g:
+            fill = lambda t: _guide.fill(t, _name_js, res.final_url or res.url, _dom)
+            steps = "".join(f"<li>{esc(fill(s))}</li>" for s in g.get("steps", []))
+            code = g.get("code")
+            extra = f"""
+          <p class="rec-meta muted">{esc(c.pillar)} &middot; {c.earned:g} of {c.possible:g} points now, up to +{gain:g} available
+            &middot; {esc(g.get("who", ""))} &middot; {esc(g.get("effort", ""))}</p>
+          <h3>Why it matters</h3><p>{esc(fill(g["why"]))}</p>
+          <h3>How to fix it</h3><ol class="steps">{steps}</ol>
+          {f'<h3>{esc(g.get("code_title", "Code"))} <button class="copy noprint" type="button">Copy</button></h3><pre><code>{esc(fill(code))}</code></pre>' if code else ''}
+          <h3>How to check it worked</h3><p>{esc(fill(g["verify"]))}</p>"""
+            plan_rows += (f'<tr><td>{i:02d}</td><td><a href="#fix{i}">{esc(c.label)}</a></td>'
+                          f'<td><span class="pill" style="color:{pcolor};border-color:{pcolor}55">{esc(c.priority)}</span></td>'
+                          f'<td>+{gain:g}</td><td class="muted">{esc(g.get("who", ""))}</td>'
+                          f'<td class="muted">{esc(g.get("effort", ""))}</td></tr>')
         rec_cards += f"""
-        <div class="rec">
+        <div class="rec" id="fix{i}">
           <div class="rec-head">
             <span class="rec-n">{i:02d}</span>
             <span class="rec-title">{esc(c.label)}</span>
             <span class="pill" style="color:{pcolor};border-color:{pcolor}55">{esc(c.priority)} impact</span>
           </div>
-          <p class="rec-why muted">Observed: {esc(c.detail)}</p>
-          <p class="rec-fix">{esc(c.fix)}</p>
+          <p class="rec-why muted">What we found: {esc(c.detail)}</p>
+          <p class="rec-fix">{esc(c.fix)}</p>{extra}
         </div>"""
+    if plan_rows:
+        rec_cards = f"""
+        <p class="muted" style="font-size:14px">Work from the top. Each fix below has the reason, numbered
+        steps, paste-ready code where it helps, and a way to confirm it worked. Text in CAPITALS inside a
+        code block is a placeholder to replace with your own details.</p>
+        <table class="plan"><tr><th>#</th><th>Fix</th><th>Impact</th><th>Points</th><th>Who</th><th>Effort</th></tr>
+        {plan_rows}</table>""" + rec_cards
+    toolbar = ("""<div class="toolbar noprint"><button type="button" onclick="window.print()">Save as PDF</button>
+    <span class="muted">In the print window, choose <b>Save as PDF</b> as the destination.</span></div>""" if full else "")
     if not recs:
         rec_cards = "<p class='muted'>No fixes needed — every check passed. Re-run after content updates.</p>"
 
@@ -1504,11 +1539,30 @@ def render_report(res: Result, full: bool = True, free_fixes: int = 3) -> str:
   .rec-n {{ font-weight:700; color:var(--violet); font-size:15px; }}
   .rec-title {{ font-weight:700; flex:1; }}
   .rec-why {{ font-size:13.5px; margin-top:8px; }}
-  .rec-fix {{ margin-top:8px; font-size:15px; }}
+  .rec-fix {{ margin-top:8px; font-size:15px; font-weight:600; }}
+  .rec-meta {{ font-size:13px; margin-top:8px; }}
+  .rec h3 {{ font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--indigo); margin:18px 0 6px; }}
+  .rec p {{ font-size:15px; }}
+  .steps {{ padding-left:22px; font-size:15px; }} .steps li {{ margin:5px 0; }}
+  pre {{ background:#16132e; color:#e9e7ff; border-radius:10px; padding:14px 16px; overflow-x:auto; font-size:13px; line-height:1.5; }}
+  pre code {{ background:none; padding:0; color:inherit; white-space:pre-wrap; word-break:break-word; }}
+  .copy {{ float:right; font:600 11px inherit; border:1px solid var(--line); background:#fff; border-radius:7px; padding:3px 9px; cursor:pointer; text-transform:none; letter-spacing:0; color:var(--ink); }}
+  table.plan {{ margin:14px 0 6px; font-size:14px; }} table.plan th {{ text-align:left; font-size:12px; color:var(--muted); padding:6px 8px 6px 0; }}
+  table.plan td {{ padding:8px 8px 8px 0; }} table.plan a {{ color:var(--indigo); font-weight:600; text-decoration:none; }}
+  .toolbar {{ display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:18px; font-size:14px; }}
+  .toolbar button {{ font:600 15px inherit; padding:11px 20px; border-radius:10px; border:0; background:#372aac; color:#fff; cursor:pointer; }}
+  @media print {{
+    body {{ background:#fff; }} .wrap {{ max-width:none; padding:0; }} .noprint {{ display:none !important; }}
+    section, header.report {{ box-shadow:none; }} header.report, .pill, pre, .rec {{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }}
+    .rec, table tr, pre, .card {{ break-inside:avoid; }} h2, h3 {{ break-after:avoid; }}
+    a {{ color:inherit; text-decoration:none; }}
+  }}
+  @page {{ margin:14mm; }}
   footer {{ margin-top:36px; text-align:center; color:var(--muted); font-size:13px; }}
   @media (max-width:640px) {{ header.report {{ padding:28px 22px; }} .grade {{ float:none; margin:0 0 14px; display:inline-block; }}
     .bar-row {{ grid-template-columns:1fr; gap:4px; }} .bar-pct {{ text-align:left; }} }}
 </style></head><body><div class="wrap">
+{toolbar}
 
 <header class="report">
   <div class="grade"><b style="color:#fff">{g_letter}</b><span style="font-size:12px;color:#c9c6ec">overall {overall}/100</span></div>
@@ -1559,6 +1613,15 @@ def render_report(res: Result, full: bool = True, free_fixes: int = 3) -> str:
   {rec_cards}
 </section>
 
+<script>
+document.addEventListener('click', function (e) {{
+  if (!e.target.classList.contains('copy')) return;
+  var pre = e.target.parentNode.nextElementSibling;
+  navigator.clipboard.writeText(pre.innerText).then(function () {{
+    e.target.textContent = 'Copied'; setTimeout(function () {{ e.target.textContent = 'Copy'; }}, 1500);
+  }});
+}});
+</script>
 <!--/LOCK--><footer>Generated by AI Visibility Studio · raw-HTML view (no JavaScript executed), the same way most AI crawlers read the web<br>
 Overall grade for {esc(VERTICAL_LABELS[res.vertical].lower())} = {esc(weighting_sentence(res))}</footer>
 </div></body></html>"""

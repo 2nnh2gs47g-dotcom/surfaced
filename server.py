@@ -41,7 +41,7 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ai_visibility_studio as studio
-from pages import landing_page, LLMS_TXT, ROBOTS_TXT, error_page, paid_page
+from pages import landing_page, LLMS_TXT, ROBOTS_TXT, error_page, paid_page, reports_page
 from pwa import APP_SHELL, MANIFEST, SERVICE_WORKER
 import billing
 
@@ -371,6 +371,8 @@ class Surfaced(BaseHTTPRequestHandler):
             self.handle_webhook()
         elif route == "/api/checkout":
             self.handle_checkout()
+        elif route == "/report":
+            self.handle_report()
         else:
             self.send_json({"error": "Not found"}, 404)
 
@@ -403,6 +405,12 @@ class Surfaced(BaseHTTPRequestHandler):
             self.send_body(sitemap, content_type="application/xml; charset=utf-8")
         elif route == "/paid":
             self.handle_paid_landing((query.get("session_id") or [""])[0].strip())
+        elif route == "/reports":
+            self.send_body(reports_page(BASE_URL))
+        elif route == "/api/reports":
+            # The key travels in a header here, so it never sits in a URL.
+            k = self.headers.get("X-Scan-Key", "").strip() or self.paid_key
+            self.send_json({"reports": billing.list_reports(ledger(), k) if k else []})
         elif route == "/api/credits":
             k = self.paid_key
             self.send_json({"credits": billing.balance_of(ledger(), k) if k else 0})
@@ -459,7 +467,11 @@ class Surfaced(BaseHTTPRequestHandler):
             result = run_scan(target, vertical)
             payload = result_to_dict(result, full=True)
             payload["credits"] = billing.balance_of(conn, key)
-            billing.commit_run(conn, res.run_id, json.dumps(payload))
+            payload["report_id"] = res.run_id
+            # The full report is stored with the run, so the buyer can reopen
+            # it later with their key without spending another credit.
+            billing.commit_run(conn, res.run_id, json.dumps(payload),
+                               studio.render_report(result, full=True))
             self.send_json(payload)
         except (BlockedURL, ValueError) as exc:
             billing.refund_run(conn, res.run_id)
@@ -518,6 +530,27 @@ class Surfaced(BaseHTTPRequestHandler):
             self.send_json({"error": "Could not record the payment."}, 500)
             return
         self.send_json({"received": True})
+
+    def handle_report(self) -> None:
+        """Reopen a stored paid report. POST, so the key is never in a URL."""
+        try:
+            length = min(int(self.headers.get("Content-Length", "0")), 4096)
+        except ValueError:
+            length = 0
+        form = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
+        key = (form.get("key") or [""])[0].strip()
+        try:
+            run_id = int((form.get("id") or ["0"])[0])
+        except ValueError:
+            run_id = 0
+        html = billing.get_report(ledger(), key, run_id) if key and run_id else None
+        if not html:
+            self.send_body(error_page(
+                "Report not found",
+                "That scan key has no stored report with this number. Reports bought "
+                "before 16 November 2026 were not stored.", BASE_URL), 404)
+            return
+        self.send_body(html, extra_headers={"Cache-Control": "no-store"})
 
     def handle_checkout(self) -> None:
         if not billing.configured():

@@ -298,3 +298,10 @@ python3 prospect_scan.py                              # batch scan urls.txt
 - **Refunds.** The webhook handles `charge.refunded` and withdraws unused credit. **Add `charge.refunded` to the events your Stripe webhook destination sends (sandbox and live).**
 - **Logs** redact `key=` values.
 - Tests: `test_scoring` 34, `test_contract` (now also checks the free/paid cut), `test_billing` 35.
+
+## Release 3.1 — detailed report, PDF, revisit (16 Nov)
+
+- **Developer detail.** `guide.py` holds, for every check: why it matters, numbered steps, paste-ready code filled with the site's name and address, who does it, effort, and how to verify. The full report adds an action-plan table and these blocks to each fix.
+- **Save as PDF.** A button on the full report opens the browser's print window; print styles are built in.
+- **Revisit.** Each paid run stores its full report. `/reports` lists a key's reports; `POST /report` reopens one. Reopening is free. The key travels in a header or form body, never in a URL.
+- Tests: `test_billing` 41 (adds reopen and wrong-key checks).

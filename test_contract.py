@@ -141,7 +141,7 @@ def check_no_drift() -> None:
         return
 
     known = {p.split(".")[0] for p, _ in CONTRACT} | {
-        "recommendations", "scores", "vertical", "error", "retry_after_seconds", "credits"
+        "recommendations", "scores", "vertical", "error", "retry_after_seconds", "credits", "report_id", "full_report", "recommendations_total"
     }
     # Keys read straight off the decoded payload, e.g. d.word_count
     for key in set(re.findall(r"\bd\.([a-z_]+)", body)):

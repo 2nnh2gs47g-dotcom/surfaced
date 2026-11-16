@@ -373,6 +373,7 @@ _BODY = """
       <button type="button" id="buy" class="price-buy">Get the full report</button>
       <p id="buymsg" class="price-sub" aria-live="polite"></p>
     </div>
+    <p class="note">Already bought a report? <a href="/reports">Reopen it with your scan key</a>.</p>
     <script>
     document.getElementById('buy').addEventListener('click', async function () {
       var m = document.getElementById('buymsg'); m.textContent = 'Opening checkout\u2026';
@@ -569,9 +570,77 @@ def paid_page(key: str, credits: int, base_url: str) -> str:
     This device has been set up automatically: the key is saved here, so the app
     will use it without pasting. On another device, paste the key into the app
     under <em>Scan key</em>.</p>
+    <p class="note">After you run your check, the full report can be saved as a PDF and
+    reopened any time at <a href="/reports">Your reports</a> with this key.</p>
     <p class="note">If the credit count reads 0, Stripe's confirmation is still
     in flight. Reload in a few seconds — this link stays valid.</p>
     <script>
     try {{ localStorage.setItem('surfaced.key', {json.dumps(key)}); }} catch (e) {{}}
     </script>
   </main>"""))
+
+
+def reports_page(base_url: str) -> str:
+    """Where a buyer reopens reports they have paid for, using their scan key."""
+    return (
+        _SHELL.replace("{{TITLE}}", "Your reports — Surfaced")
+        .replace("{{DESCRIPTION}}", "Reopen the full reports you have bought, using your scan key.")
+        .replace("{{BASE_URL}}", base_url)
+        .replace("{{SCHEMA}}", "")
+        .replace("{{BODY}}", """
+  <main class="wrap narrow">
+    <p class="eyebrow">Your reports</p>
+    <h1 class="display">Reopen a full report</h1>
+    <p class="lede">Enter your scan key to see every full report bought with it.
+    Reopening a report is free and can be saved as a PDF.</p>
+
+    <form class="scanbox" id="kf">
+      <label class="visually-hidden" for="k">Scan key</label>
+      <input id="k" type="text" autocapitalize="off" autocorrect="off" spellcheck="false"
+             placeholder="sfd_…" required>
+      <button type="submit">Show my reports</button>
+    </form>
+    <p class="note" id="msg" aria-live="polite"></p>
+    <div id="list" style="margin-top:22px"></div>
+
+    <form id="open" method="post" action="/report" target="_blank" hidden>
+      <input type="hidden" name="key" id="ok"><input type="hidden" name="id" id="oi">
+    </form>
+    <p class="note" style="margin-top:34px"><a href="/app">Run a new check in the app</a>
+    &middot; <a href="/">Home</a></p>
+  </main>
+  <script>
+  var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); };
+  var k = document.getElementById('k'), msg = document.getElementById('msg'), list = document.getElementById('list');
+  try { k.value = localStorage.getItem('surfaced.key') || ''; } catch (e) {}
+  async function show() {
+    var key = k.value.trim(); if (!key) return;
+    msg.textContent = 'Looking up your reports\u2026'; list.innerHTML = '';
+    try {
+      var r = await fetch('/api/reports', { headers: { 'X-Scan-Key': key } });
+      var d = await r.json(), rows = d.reports || [];
+      if (!rows.length) { msg.textContent = 'No full reports found for that key yet. Run a check in the app to use a credit.'; return; }
+      try { localStorage.setItem('surfaced.key', key); } catch (e) {}
+      msg.textContent = rows.length + ' report' + (rows.length === 1 ? '' : 's') + ' found.';
+      list.innerHTML = rows.map(function (x) {
+        var when = x.checked ? new Date(x.checked * 1000).toLocaleDateString(undefined, {year:'numeric', month:'short', day:'numeric'}) : '';
+        return '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:14px 0;border-top:1px solid var(--line)">' +
+          '<div style="flex:1;min-width:200px"><strong>' + esc(x.title || x.url) + '</strong><br>' +
+          '<span class="note" style="margin:0">' + esc(String(x.url).replace(/^https?:\/\//, '')) + ' &middot; ' + esc(when) +
+          (x.score != null ? ' &middot; ' + esc(x.score) + '/100, grade ' + esc(x.grade) : '') + '</span></div>' +
+          (x.available ? '<button type="button" data-id="' + esc(x.id) + '" class="openbtn" style="font:600 14px inherit;padding:10px 16px;border-radius:10px;border:0;background:var(--amber);color:#1a1530;cursor:pointer">Open report</button>'
+                       : '<span class="note" style="margin:0">Not stored</span>') + '</div>';
+      }).join('');
+    } catch (e) { msg.textContent = 'Could not reach the server. Try again.'; }
+  }
+  document.getElementById('kf').addEventListener('submit', function (e) { e.preventDefault(); show(); });
+  list.addEventListener('click', function (e) {
+    var id = e.target.getAttribute && e.target.getAttribute('data-id'); if (!id) return;
+    document.getElementById('ok').value = k.value.trim();
+    document.getElementById('oi').value = id;
+    document.getElementById('open').submit();
+  });
+  if (k.value) show();
+  </script>""")
+    )

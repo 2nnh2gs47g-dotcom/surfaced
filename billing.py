@@ -135,6 +135,8 @@ def init(conn: sqlite3.Connection) -> None:
     for col in ("payment_intent", "key_hash"):
         if col not in cols:
             conn.execute(f"ALTER TABLE grant ADD COLUMN {col} TEXT")
+    if "report_html" not in {r["name"] for r in conn.execute("PRAGMA table_info(run)")}:
+        conn.execute("ALTER TABLE run ADD COLUMN report_html TEXT")
 
 
 def _hash(key: str) -> str:
@@ -258,7 +260,8 @@ def reserve(conn: sqlite3.Connection, key: str, idempotency_key: str,
         raise
 
 
-def commit_run(conn: sqlite3.Connection, run_id: int, result_json: str) -> None:
+def commit_run(conn: sqlite3.Connection, run_id: int, result_json: str,
+               report_html: str | None = None) -> None:
     """The scan succeeded: the credit is spent for good."""
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -267,8 +270,8 @@ def commit_run(conn: sqlite3.Connection, run_id: int, result_json: str) -> None:
             conn.execute("ROLLBACK")
             return
         conn.execute(
-            "UPDATE run SET status='done', result=?, settled=? WHERE id = ?",
-            (result_json, time.time(), run_id),
+            "UPDATE run SET status='done', result=?, report_html=?, settled=? WHERE id = ?",
+            (result_json, report_html, time.time(), run_id),
         )
         conn.execute(
             "UPDATE balance SET reserved = reserved - 1 WHERE key_hash = ? AND reserved > 0",
@@ -526,3 +529,34 @@ def revoke_for_refund(conn: sqlite3.Connection, event_id: str, payment_intent: s
     except Exception:
         conn.execute("ROLLBACK")
         raise
+
+
+# ---------------------------------------------------------------------------
+# Revisiting — a paid report stays available to the key that bought it
+# ---------------------------------------------------------------------------
+
+def list_reports(conn: sqlite3.Connection, key: str) -> list[dict]:
+    """Completed runs for this key, newest first. Reopening one costs nothing."""
+    rows = conn.execute(
+        "SELECT id, url, settled, result, report_html IS NOT NULL AS has_html FROM run"
+        " WHERE key_hash = ? AND status = 'done' ORDER BY settled DESC LIMIT 100",
+        (_hash(key),)).fetchall()
+    out = []
+    for r in rows:
+        try:
+            d = json.loads(r["result"] or "{}")
+        except ValueError:
+            d = {}
+        out.append({"id": r["id"], "url": d.get("url") or r["url"],
+                    "title": d.get("title") or "", "checked": r["settled"],
+                    "score": (d.get("scores") or {}).get("overall"),
+                    "grade": d.get("grade"), "available": bool(r["has_html"])})
+    return out
+
+
+def get_report(conn: sqlite3.Connection, key: str, run_id: int) -> str | None:
+    """The stored report, only for the key that paid for it."""
+    row = conn.execute(
+        "SELECT report_html FROM run WHERE id = ? AND key_hash = ? AND status = 'done'",
+        (run_id, _hash(key))).fetchone()
+    return row["report_html"] if row else None
