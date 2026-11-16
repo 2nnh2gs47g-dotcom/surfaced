@@ -288,3 +288,13 @@ The original tools still work unchanged:
 python3 ai_visibility_studio.py https://example.com   # one-off CLI scan
 python3 prospect_scan.py                              # batch scan urls.txt
 ```
+
+## Release 3 — Buy button, scan key in the app, refunds
+
+- **Free vs paid.** Free scans return scores and the top 3 fixes. The full fix list with observations is paid; it is cut on the server (`result_to_dict(full=...)`), in both `/api/scan` and the HTML report.
+- **Buy button** on the free report and in `/app` (POST `/api/checkout`).
+- **Key handling.** `/paid` saves the key on the device; the app uses it automatically, shows credits left, and has a "I have a scan key" field for a second device. Keys now start `sfd_` (not `sk_`, which looks like a Stripe secret key).
+- **Retry fix.** A failed paid scan can be retried with the same intent; before, it answered "still running" forever.
+- **Refunds.** The webhook handles `charge.refunded` and withdraws unused credit. **Add `charge.refunded` to the events your Stripe webhook destination sends (sandbox and live).**
+- **Logs** redact `key=` values.
+- Tests: `test_scoring` 34, `test_contract` (now also checks the free/paid cut), `test_billing` 35.

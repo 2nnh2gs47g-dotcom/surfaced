@@ -224,6 +224,41 @@ check("a paid session grants credit",
 
 
 # ---------------------------------------------------------------------------
+print("\nDefence 5 — a failed run can be retried with the same intent")
+# ---------------------------------------------------------------------------
+conn, _ = fresh_db()
+key, _ = billing.grant_credits(conn, event_id="e6", object_id="o6", email=None, credits=1)
+r = billing.reserve(conn, key, "intent-retry", "https://example.com")
+billing.refund_run(conn, r.run_id)
+r2 = billing.reserve(conn, key, "intent-retry", "https://example.com")
+check("a refunded intent is not stuck as 'still running'", r2.replayed is False)
+check("the retry spends exactly one credit", billing.balance_of(conn, key) == 0)
+
+# ---------------------------------------------------------------------------
+print("\nDefence 6 — a refunded payment takes its unused credit back")
+# ---------------------------------------------------------------------------
+conn, _ = fresh_db()
+key, _ = billing.grant_credits(conn, event_id="e7", object_id="cs7", email=None,
+                               credits=1, payment_intent="pi_7")
+ev = {"id": "evt_r1", "type": "charge.refunded", "data": {"object": {"payment_intent": "pi_7"}}}
+tgt = billing.refund_target(ev)
+check("a refund event is recognised", tgt == ("evt_r1", "pi_7"))
+check("refund removes the unused credit", billing.revoke_for_refund(conn, *tgt) == 1
+      and billing.balance_of(conn, key) == 0)
+check("a redelivered refund takes nothing more",
+      billing.revoke_for_refund(conn, "evt_r2", "pi_7") == 0)
+
+conn, _ = fresh_db()
+key, _ = billing.grant_credits(conn, event_id="e8", object_id="cs8", email=None,
+                               credits=1, payment_intent="pi_8")
+r = billing.reserve(conn, key, "i8", "https://example.com")
+billing.commit_run(conn, r.run_id, "{}")
+check("credit already spent is not clawed below zero",
+      billing.revoke_for_refund(conn, "evt_r3", "pi_8") == 0 and billing.balance_of(conn, key) == 0)
+check("an unknown payment intent is ignored", billing.revoke_for_refund(conn, "evt_r4", "pi_none") == 0)
+
+
+# ---------------------------------------------------------------------------
 print()
 if failed:
     print(f"{len(failed)} FAILURE(S):")

@@ -163,6 +163,11 @@ APP_SHELL = """<!DOCTYPE html>
   .hrow .hs { font:700 14px var(--mono); width:30px; flex:none; }
   .hrow .hu { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
   .clear { margin-top:14px; background:none; border:1px solid var(--line); color:var(--muted); border-radius:10px; padding:9px 14px; font-size:13px; }
+  .keybox { margin-top:18px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+  .keybox input { flex:1; min-width:200px; padding:12px; border-radius:10px; border:1px solid var(--line); background:#ffffff12; color:var(--paper); font:14px var(--mono); }
+  .keybox .retry { margin-top:0; }
+  #keystate { width:100%; font-size:14px; color:var(--muted); }
+  .lock { margin-top:14px; padding:14px; border:1px dashed var(--line); border-radius:12px; font-size:14px; color:var(--muted); }
   .why { margin-top:14px; font-size:13.5px; color:var(--muted); }
   .weight { font:10.5px var(--mono); color:#8d89b3; margin-top:3px; }
   .retry { margin-top:12px; background:none; border:1px solid var(--line); color:var(--paper);
@@ -199,6 +204,18 @@ APP_SHELL = """<!DOCTYPE html>
   <button class="go" id="go" type="submit">Run the check</button>
 </form>
 
+<div class="keybox" id="keybox">
+  <div id="keystate"></div>
+  <div id="keyform" hidden>
+    <input id="keyin" type="text" autocapitalize="off" autocorrect="off" spellcheck="false"
+           placeholder="Scan key (sfd_…)" aria-label="Scan key">
+    <button class="retry" id="keysave" type="button">Save key</button>
+  </div>
+  <button class="retry" id="buy" type="button">Unlock full report — $19.99</button>
+  <button class="retry" id="keytoggle" type="button">I have a scan key</button>
+  <div class="why" id="keymsg"></div>
+</div>
+
 <div id="out" role="status" aria-live="polite"></div>
 
 <div class="hist" id="hist" hidden>
@@ -211,6 +228,28 @@ APP_SHELL = """<!DOCTYPE html>
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const KEY = 'surfaced.history';
+const KKEY = 'surfaced.key';
+let credits = null;
+function getKey() { try { return localStorage.getItem(KKEY) || ''; } catch (e) { return ''; } }
+function setKey(k) { try { if (k) localStorage.setItem(KKEY, k); else localStorage.removeItem(KKEY); } catch (e) {} }
+function uuid() { return (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(36).slice(2)); }
+async function refreshCredits() {
+  const k = getKey();
+  if (!k) { credits = null; drawKey(); return; }
+  try {
+    const r = await fetch('/api/credits?key=' + encodeURIComponent(k));
+    const d = await r.json(); credits = typeof d.credits === 'number' ? d.credits : 0;
+  } catch (e) { credits = null; }
+  drawKey();
+}
+function drawKey() {
+  const k = getKey();
+  $('#keystate').textContent = !k ? 'Free check: scores and your top 3 fixes.'
+    : credits === null ? 'Scan key saved on this device.'
+    : credits > 0 ? `Scan key saved. ${credits} full report${credits === 1 ? '' : 's'} left.`
+    : 'Scan key saved, but no full reports left.';
+  $('#buy').textContent = k && credits > 0 ? 'Buy another — $19.99' : 'Unlock full report — $19.99';
+}
 
 const hue = v => v >= 80 ? '#67e8f9' : v >= 60 ? '#a78bfa' : v >= 40 ? '#fbbf24' : '#fb7185';
 
@@ -265,7 +304,7 @@ function bar(label, v) {
 
 function render(d) {
   const s = d.scores, v = d.vertical || {};
-  const fixes = (d.recommendations || []).slice(0, 6).map(r =>
+  const fixes = (d.recommendations || []).map(r =>
     `<li><strong>${esc(r.label)}<span class="tag ${esc(r.priority)}">${esc(r.priority)}</span></strong>${esc(r.fix)}</li>`
   ).join('');
 
@@ -286,7 +325,9 @@ function render(d) {
     </div>
     ${d.javascript_rendered ? '<p class="msg" style="margin-top:16px">Most of this page is built by JavaScript, so a crawler sees far less than a visitor does.</p>' : ''}
     ${d.summary ? `<p class="why">${esc(d.summary)}</p>` : ''}
-    ${fixes ? `<h2>Fix these first</h2><ol>${fixes}</ol>` : ''}
+    ${fixes ? `<h2>${d.full_report ? 'Every fix, in order' : 'Fix these first'}</h2><ol>${fixes}</ol>` : ''}
+    ${!d.full_report && d.recommendations_total > (d.recommendations || []).length
+      ? `<div class="lock">${d.recommendations_total - d.recommendations.length} more fix(es) and what we observed on your page are in the full report. Use <b>Unlock full reports</b> above.</div>` : ''}
     <p class="gsub">${d.word_count.toLocaleString()} words visible to crawlers${
       v.detected_from ? ' &middot; business type ' + esc(v.detected_from) : ''}</p>`;
 }
@@ -307,7 +348,10 @@ async function scan(url, vertical) {
   try { target = normalizeUrl(url); }
   catch (e) { lastAttempt = null; fail(e.message, false); return; }
 
-  lastAttempt = { url, vertical };
+  // Keep the idempotency id across a retry of the same attempt: a retry then
+  // can never spend a second credit.
+  const same = lastAttempt && lastAttempt.url === url && lastAttempt.vertical === vertical && lastAttempt.retry;
+  lastAttempt = { url, vertical, idem: same ? lastAttempt.idem : '', retry: false };
   const go = $('#go');
   go.disabled = true; go.textContent = 'Checking\u2026';
   $('#out').innerHTML = '<p class="msg"><span class="spin"></span>Fetching the page the way an AI crawler would. ' +
@@ -317,15 +361,22 @@ async function scan(url, vertical) {
   const timer = setTimeout(() => ctrl.abort('timeout'), TIMEOUT_MS);
 
   try {
+    const k = getKey();
+    const paid = k && credits !== 0;
+    if (paid && !lastAttempt.idem) lastAttempt.idem = uuid();
     const q = `/api/scan?url=${encodeURIComponent(target)}` +
-              (vertical ? `&vertical=${encodeURIComponent(vertical)}` : '');
+              (vertical ? `&vertical=${encodeURIComponent(vertical)}` : '') +
+              (paid ? `&key=${encodeURIComponent(k)}&idempotency=${encodeURIComponent(lastAttempt.idem)}` : '');
     const res = await fetch(q, { signal: ctrl.signal, headers: { 'Accept': 'application/json' } });
 
     let d = null;
     try { d = await res.json(); } catch (e) { /* handled below */ }
 
     if (!res.ok) {
-      if (res.status === 429) {
+      if (res.status === 402) {
+        credits = 0; drawKey();
+        fail('This key has no full reports left. Buy another, or run the free check by clearing the key.', false);
+      } else if (res.status === 429) {
         const secs = (d && d.retry_after_seconds) || 0;
         const mins = Math.max(1, Math.ceil(secs / 60));
         fail(`You have used your free checks for this hour. Try again in about ${mins} minute${mins === 1 ? '' : 's'}.`, false);
@@ -338,6 +389,8 @@ async function scan(url, vertical) {
     }
     if (!d || !d.scores) { fail('The server response was not a scan report.', true); return; }
 
+    if (typeof d.credits === 'number') { credits = d.credits; drawKey(); }
+    lastAttempt = null;
     render(d); store(d); drawHistory();
   } catch (e) {
     if (!navigator.onLine) {
@@ -354,7 +407,7 @@ async function scan(url, vertical) {
 }
 
 $('#out').addEventListener('click', e => {
-  if (e.target.id === 'retry' && lastAttempt) scan(lastAttempt.url, lastAttempt.vertical);
+  if (e.target.id === 'retry' && lastAttempt) { lastAttempt.retry = true; scan(lastAttempt.url, lastAttempt.vertical); }
 });
 
 $('#f').addEventListener('submit', e => {
@@ -367,6 +420,25 @@ $('#hrows').addEventListener('click', e => {
   if (b) { $('#url').value = b.dataset.u; scan(b.dataset.u, $('#vert').value); window.scrollTo({ top: 0, behavior: 'smooth' }); }
 });
 $('#clear').addEventListener('click', () => { try { localStorage.removeItem(KEY); } catch (e) {} drawHistory(); });
+
+$('#keytoggle').addEventListener('click', () => { $('#keyform').hidden = !$('#keyform').hidden; });
+$('#keysave').addEventListener('click', () => {
+  const v = $('#keyin').value.trim();
+  if (v && !/^sfd_[A-Za-z0-9_-]{20,}$/.test(v)) { $('#keymsg').textContent = 'That does not look like a scan key. It starts with sfd_.'; return; }
+  setKey(v); $('#keyin').value = ''; $('#keyform').hidden = true;
+  $('#keymsg').textContent = v ? 'Key saved on this device.' : 'Key removed. Free checks only.';
+  refreshCredits();
+});
+$('#buy').addEventListener('click', async () => {
+  $('#keymsg').textContent = 'Opening checkout\u2026';
+  try {
+    const r = await fetch('/api/checkout', { method: 'POST' });
+    const d = await r.json();
+    if (d.url) { location.href = d.url; return; }
+    $('#keymsg').textContent = d.error || 'Checkout is unavailable right now.';
+  } catch (e) { $('#keymsg').textContent = 'Could not reach checkout. Try again.'; }
+});
+refreshCredits();
 
 const net = () => document.body.classList.toggle('is-offline', !navigator.onLine);
 addEventListener('online', net); addEventListener('offline', net); net();

@@ -42,6 +42,8 @@ CONTRACT: list[tuple[str, type | tuple[type, ...]]] = [
     ("vertical.label", str),
     ("vertical.weighting", str),
     ("vertical.detected_from", str),
+    ("full_report", bool),
+    ("recommendations_total", int),
 ]
 
 # Each recommendation the app renders.
@@ -139,7 +141,7 @@ def check_no_drift() -> None:
         return
 
     known = {p.split(".")[0] for p, _ in CONTRACT} | {
-        "recommendations", "scores", "vertical", "error", "retry_after_seconds"
+        "recommendations", "scores", "vertical", "error", "retry_after_seconds", "credits"
     }
     # Keys read straight off the decoded payload, e.g. d.word_count
     for key in set(re.findall(r"\bd\.([a-z_]+)", body)):
@@ -150,6 +152,19 @@ def check_no_drift() -> None:
 def main() -> int:
     payload = server.result_to_dict(sample_result())
     check(payload)
+    # The paid part must be cut on the server, not hidden in the app.
+    many = sample_result()
+    many.checks = [studio.Check(pillar="AEO", label=f"SAMPLE fix {i}", earned=0, possible=5,
+                                detail="SAMPLE observed", fix=f"SAMPLE fix text {i}", priority="High")
+                   for i in range(7)]
+    free = server.result_to_dict(many)
+    paid = server.result_to_dict(many, full=True)
+    if len(free["recommendations"]) != server.FREE_FIXES:
+        failures.append("free scan must carry exactly the top fixes only")
+    if free["recommendations_total"] != 7 or len(paid["recommendations"]) != 7:
+        failures.append("paid scan must carry every fix")
+    if any(r["observed"] for r in free["recommendations"]):
+        failures.append("free scan must not carry observations")
     check_error_shape()
     check_no_drift()
 

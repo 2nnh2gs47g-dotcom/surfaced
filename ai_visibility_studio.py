@@ -1344,7 +1344,7 @@ def grade(score: int) -> tuple[str, str]:
 PRIORITY_ORDER = {"High": 0, "Medium": 1, "Low": 2}
 
 
-def render_report(res: Result) -> str:
+def render_report(res: Result, full: bool = True, free_fixes: int = 3) -> str:
     esc = _html.escape
     overall = overall_score(res)
     g_letter, g_color = grade(overall)
@@ -1416,6 +1416,9 @@ def render_report(res: Result) -> str:
     recs = sorted([c for c in res.checks if c.fix],
                   key=lambda c: (PRIORITY_ORDER.get(c.priority, 3), -(c.possible - c.earned)))
     rec_cards = ""
+    hidden = 0 if full else max(0, len(recs) - free_fixes)
+    if not full:
+        recs = recs[:free_fixes]
     for i, c in enumerate(recs, 1):
         pcolor = {"High": "#dc2626", "Medium": "#d97706", "Low": "#64748b"}.get(c.priority, "#64748b")
         rec_cards += f"""
@@ -1428,6 +1431,25 @@ def render_report(res: Result) -> str:
           <p class="rec-why muted">Observed: {esc(c.detail)}</p>
           <p class="rec-fix">{esc(c.fix)}</p>
         </div>"""
+    if hidden:
+        rec_cards += f"""
+        <div class="rec" style="text-align:center">
+          <p class="rec-title">{hidden} more fix{'' if hidden == 1 else 'es'} in the full report</p>
+          <p class="rec-why muted">The full report lists every fix in priority order, with what we observed on your page.</p>
+          <p style="margin-top:14px"><button id="buy" style="font:600 15px system-ui;padding:12px 22px;border-radius:10px;border:0;background:#111;color:#fff;cursor:pointer">Unlock the full report — <s>$49.99</s> $19.99</button></p>
+          <p id="buymsg" class="muted" style="font-size:13px;margin-top:8px"></p>
+        </div>
+        <script>
+        document.getElementById('buy').addEventListener('click', async function () {{
+          var m = document.getElementById('buymsg'); m.textContent = 'Opening checkout\u2026';
+          try {{
+            var r = await fetch('/api/checkout', {{method: 'POST'}});
+            var d = await r.json();
+            if (d.url) {{ location.href = d.url; return; }}
+            m.textContent = d.error || 'Checkout is unavailable right now.';
+          }} catch (e) {{ m.textContent = 'Could not reach checkout. Try again.'; }}
+        }});
+        </script>"""
     if not recs:
         rec_cards = "<p class='muted'>No fixes needed — every check passed. Re-run after content updates.</p>"
 

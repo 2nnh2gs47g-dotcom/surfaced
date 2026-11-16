@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import json
+import re
 import os
 import secrets
 import socket
@@ -159,8 +160,25 @@ scan_slots = threading.Semaphore(MAX_CONCURRENT_SCANS)
 # ---------------------------------------------------------------------------
 
 
-def result_to_dict(res: studio.Result) -> dict:
+FREE_FIXES = 3
+
+
+def result_to_dict(res: studio.Result, full: bool = False) -> dict:
+    """
+    The JSON contract the app reads. A free scan carries the scores and the
+    top FREE_FIXES fixes; the full fix list, with observations, is the paid
+    part, so it is cut here on the server — never merely hidden in the app.
+    """
     overall = studio.overall_score(res)
+    recs = [
+        {"label": c.label, "priority": c.priority, "observed": c.detail, "fix": c.fix}
+        for c in sorted(
+            [c for c in res.checks if c.fix],
+            key=lambda c: (studio.PRIORITY_ORDER.get(c.priority, 3), -(c.possible - c.earned)),
+        )
+    ]
+    shown = recs if full else [{"label": r["label"], "priority": r["priority"],
+                                "observed": "", "fix": r["fix"]} for r in recs[:FREE_FIXES]]
     return {
         "url": res.final_url,
         "title": res.site_title,
@@ -183,14 +201,9 @@ def result_to_dict(res: studio.Result) -> dict:
             "social": res.social_score,
         },
         "pillars": studio.pillar_percents(res),
-        "checks": [asdict(c) for c in res.checks],
-        "recommendations": [
-            {"label": c.label, "priority": c.priority, "observed": c.detail, "fix": c.fix}
-            for c in sorted(
-                [c for c in res.checks if c.fix],
-                key=lambda c: (studio.PRIORITY_ORDER.get(c.priority, 3), -(c.possible - c.earned)),
-            )
-        ],
+        "full_report": full,
+        "recommendations_total": len(recs),
+        "recommendations": shown,
         "crawlers": [
             {"bot": bot, "role": role, "kind": kind, "status": status}
             for bot, role, kind, status in res.crawler_rows
@@ -282,7 +295,7 @@ def access_key_for(session_id: str) -> str:
               or billing.WEBHOOK_SECRET or "surfaced-dev-only")
     digest = billing.hmac.new(secret.encode(), session_id.encode(),
                               billing.hashlib.sha256).digest()
-    return "sk_" + base64.urlsafe_b64encode(digest).decode().rstrip("=")[:32]
+    return "sfd_" + base64.urlsafe_b64encode(digest).decode().rstrip("=")[:32]
 
 
 ICON_ROUTES = {
@@ -301,7 +314,8 @@ class Surfaced(BaseHTTPRequestHandler):
     idem_key = ""
 
     def log_message(self, fmt, *args):
-        print(f"{self.client_ip()} {fmt % args}", flush=True)
+        line = re.sub(r"([?&]key=)[^&\s]+", r"\1<redacted>", fmt % args)
+        print(f"{self.client_ip()} {line}", flush=True)
 
     def client_ip(self) -> str:
         forwarded = self.headers.get("X-Forwarded-For", "")
@@ -443,7 +457,7 @@ class Surfaced(BaseHTTPRequestHandler):
 
         try:
             result = run_scan(target, vertical)
-            payload = result_to_dict(result)
+            payload = result_to_dict(result, full=True)
             payload["credits"] = billing.balance_of(conn, key)
             billing.commit_run(conn, res.run_id, json.dumps(payload))
             self.send_json(payload)
@@ -478,6 +492,16 @@ class Surfaced(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, 400)
             return
 
+        refund = billing.refund_target(event)
+        if refund is not None:
+            try:
+                billing.revoke_for_refund(ledger(), *refund)
+            except Exception:
+                self.send_json({"error": "Could not record the refund."}, 500)
+                return
+            self.send_json({"received": True})
+            return
+
         mapped = billing.credits_for_event(event)
         if mapped is None:
             self.send_json({"ignored": True})      # 200: nothing to retry
@@ -487,7 +511,8 @@ class Surfaced(BaseHTTPRequestHandler):
         try:
             billing.grant_credits(
                 ledger(), event_id=event_id, object_id=object_id, email=email,
-                credits=credits, access_key=access_key_for(object_id))
+                credits=credits, access_key=access_key_for(object_id),
+                payment_intent=billing.payment_intent_of(event))
         except Exception:
             # A real failure: let Stripe retry rather than losing the payment.
             self.send_json({"error": "Could not record the payment."}, 500)
@@ -569,7 +594,7 @@ class Surfaced(BaseHTTPRequestHandler):
         if as_json:
             self.send_json(result_to_dict(result))
         else:
-            self.send_body(studio.render_report(result))
+            self.send_body(studio.render_report(result, full=False, free_fixes=FREE_FIXES))
 
 
 def main() -> None:

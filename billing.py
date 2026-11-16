@@ -92,6 +92,15 @@ CREATE TABLE IF NOT EXISTS grant (
   stripe_object_id TEXT    NOT NULL,
   email            TEXT,
   credits          INTEGER NOT NULL,
+  created          REAL    NOT NULL,
+  payment_intent   TEXT,                      -- lets a refund find its grant
+  key_hash         TEXT                       -- which balance the grant fed
+);
+
+CREATE TABLE IF NOT EXISTS revocation (
+  stripe_event_id  TEXT PRIMARY KEY,          -- a refund event revokes once
+  grant_id         INTEGER NOT NULL,
+  credits          INTEGER NOT NULL,
   created          REAL    NOT NULL
 );
 
@@ -121,6 +130,11 @@ CREATE INDEX IF NOT EXISTS idx_grant_object ON grant(stripe_object_id);
 
 def init(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    # Ledgers created before refunds were handled lack two columns.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(grant)")}
+    for col in ("payment_intent", "key_hash"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE grant ADD COLUMN {col} TEXT")
 
 
 def _hash(key: str) -> str:
@@ -133,7 +147,8 @@ def _hash(key: str) -> str:
 
 def grant_credits(conn: sqlite3.Connection, *, event_id: str, object_id: str,
                   email: str | None, credits: int,
-                  access_key: str | None = None) -> tuple[str | None, bool]:
+                  access_key: str | None = None,
+                  payment_intent: str | None = None) -> tuple[str | None, bool]:
     """
     Record a payment and add credits. Returns (access_key, granted).
 
@@ -153,9 +168,9 @@ def grant_credits(conn: sqlite3.Connection, *, event_id: str, object_id: str,
     try:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
-            "INSERT INTO grant (stripe_event_id, stripe_object_id, email, credits, created)"
-            " VALUES (?,?,?,?,?)",
-            (event_id, object_id, email, credits, now),
+            "INSERT INTO grant (stripe_event_id, stripe_object_id, email, credits,"
+            " created, payment_intent, key_hash) VALUES (?,?,?,?,?,?,?)",
+            (event_id, object_id, email, credits, now, payment_intent, kh),
         )
         conn.execute(
             "INSERT INTO balance (key_hash, email, credits, created) VALUES (?,?,?,?)"
@@ -209,6 +224,11 @@ def reserve(conn: sqlite3.Connection, key: str, idempotency_key: str,
             "SELECT id, status, result FROM run WHERE idempotency_key = ?",
             (idempotency_key,),
         ).fetchone()
+        if prior is not None and prior["status"] == "refunded":
+            # The earlier attempt failed and its credit came back. Letting the
+            # same intent retry is safe: nothing was spent, nothing was returned.
+            conn.execute("DELETE FROM run WHERE id = ?", (prior["id"],))
+            prior = None
         if prior is not None:
             conn.execute("COMMIT")
             return Reservation(prior["id"], True, prior["result"])
@@ -451,3 +471,58 @@ def credits_for_event(event: dict) -> tuple[str, str, str | None, int] | None:
         return event_id, obj.get("id", ""), email, CREDITS_PER_PURCHASE
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Refunds — money returned means credit withdrawn
+# ---------------------------------------------------------------------------
+
+def payment_intent_of(event: dict) -> str | None:
+    """The payment intent a checkout or refund event concerns, if it names one."""
+    obj = (event.get("data") or {}).get("object") or {}
+    pi = obj.get("payment_intent")
+    return pi if isinstance(pi, str) and pi else None
+
+
+def refund_target(event: dict) -> tuple[str, str] | None:
+    """(event_id, payment_intent) for a charge.refunded event, else None."""
+    if event.get("type") != "charge.refunded":
+        return None
+    pi = payment_intent_of(event)
+    return (event["id"], pi) if pi and event.get("id") else None
+
+
+def revoke_for_refund(conn: sqlite3.Connection, event_id: str, payment_intent: str) -> int:
+    """
+    Withdraw the credit a refunded payment bought. Returns credits removed.
+
+    Credit already spent stays spent; only what is still unused can be taken
+    back, and the balance never goes below zero. The revocation table makes a
+    redelivered refund event a no-op.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        g = conn.execute(
+            "SELECT id, credits, key_hash FROM grant WHERE payment_intent = ?",
+            (payment_intent,)).fetchone()
+        if g is None or g["key_hash"] is None:
+            conn.execute("COMMIT")
+            return 0
+        if conn.execute("SELECT 1 FROM revocation WHERE grant_id = ?", (g["id"],)).fetchone():
+            conn.execute("COMMIT")
+            return 0
+        row = conn.execute("SELECT credits FROM balance WHERE key_hash = ?",
+                           (g["key_hash"],)).fetchone()
+        take = min(g["credits"], row["credits"]) if row else 0
+        conn.execute("INSERT INTO revocation VALUES (?,?,?,?)",
+                     (event_id, g["id"], take, time.time()))
+        conn.execute("UPDATE balance SET credits = credits - ? WHERE key_hash = ?",
+                     (take, g["key_hash"]))
+        conn.execute("COMMIT")
+        return take
+    except sqlite3.IntegrityError:
+        conn.execute("ROLLBACK")
+        return 0
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise

@@ -8,6 +8,7 @@ to read is present in the raw markup.
 """
 
 import html as _html
+import json
 
 ROBOTS_TXT = """# Surfaced — every AI citation crawler is welcome here.
 User-agent: *
@@ -70,7 +71,7 @@ def landing_page(base_url: str) -> str:
         .replace(
             "{{DESCRIPTION}}",
             "Surfaced checks whether ChatGPT, Claude, Gemini and Perplexity can reach, read and "
-            "quote your site, then lists the fixes in priority order. Free, no signup.",
+            "quote your site, then lists the fixes in priority order. Free check, no signup; full report $19.99.",
         )
         .replace("{{BASE_URL}}", base_url)
         .replace("{{SCHEMA}}", _SCHEMA)
@@ -155,6 +156,19 @@ _SHELL = """<!DOCTYPE html>
   .scanbox button:hover { filter:brightness(1.08); }
   .scanbox:focus-within { border-color:#ffffff44; }
   .note { margin-top:14px; font:13px var(--mono); color:#8d89b3; }
+  .price { margin-top:28px; border:1px solid var(--line); border-radius:16px; padding:20px 22px;
+    background:#ffffff08; display:flex; flex-wrap:wrap; gap:16px 24px; align-items:center; justify-content:space-between; }
+  .price > div { flex:1 1 320px; }
+  .price-label { font:600 11px var(--mono); letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin:0; }
+  .price-row { display:flex; align-items:baseline; flex-wrap:wrap; gap:10px; margin:8px 0 6px; }
+  .price-was { font-size:20px; color:#8d89b3; text-decoration-thickness:2px; }
+  .price-now { font-size:34px; font-weight:700; color:var(--paper, #fff); }
+  .price-tag { font:600 11px var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--amber);
+    border:1px solid #fbbf2466; border-radius:99px; padding:3px 9px; }
+  .price-sub { margin:0; font-size:14px; color:var(--muted); }
+  .price-buy { font:600 15px inherit; padding:13px 22px; border-radius:11px; border:0; cursor:pointer;
+    background:var(--amber); color:#1a1530; }
+  #buymsg { flex-basis:100%; }
 
   /* Signature: the crawler readout */
   .readout {
@@ -270,8 +284,12 @@ _SCHEMA = """<script type="application/ld+json">
       "operatingSystem": "Web",
       "url": "{{BASE_URL}}/",
       "publisher": { "@id": "{{BASE_URL}}/#org" },
-      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD",
-                  "description": "Free single-page AI visibility check." }
+      "offers": [
+        { "@type": "Offer", "price": "0", "priceCurrency": "USD",
+          "description": "Free single-page AI visibility check: scores and the top 3 fixes." },
+        { "@type": "Offer", "price": "19.99", "priceCurrency": "USD",
+          "description": "Full report, one-time purchase: every fix in priority order. Introductory price; regular price $49.99." }
+      ]
     },
     {
       "@type": "FAQPage",
@@ -341,6 +359,31 @@ _BODY = """
       <button type="submit">Run the check</button>
     </form>
     <p class="note">Free &middot; no signup &middot; results in about 10 seconds</p>
+
+    <div class="price">
+      <div>
+        <p class="price-label">Full report &middot; one-time purchase</p>
+        <p class="price-row"><s class="price-was" aria-label="Regular price $49.99">$49.99</s>
+          <span class="price-now">$19.99</span>
+          <span class="price-tag">Introductory offer</span></p>
+        <p class="price-sub">The free check shows your scores and top 3 fixes. The full
+        report lists every fix in priority order, with what we found on your page.
+        No subscription.</p>
+      </div>
+      <button type="button" id="buy" class="price-buy">Get the full report</button>
+      <p id="buymsg" class="price-sub" aria-live="polite"></p>
+    </div>
+    <script>
+    document.getElementById('buy').addEventListener('click', async function () {
+      var m = document.getElementById('buymsg'); m.textContent = 'Opening checkout\u2026';
+      try {
+        var r = await fetch('/api/checkout', {method: 'POST'});
+        var d = await r.json();
+        if (d.url) { location.href = d.url; return; }
+        m.textContent = d.error || 'Checkout is unavailable right now.';
+      } catch (e) { m.textContent = 'Could not reach checkout. Try again.'; }
+    });
+    </script>
     <p class="note"><a href="/app">Open the app</a> &mdash; add it to your phone's home screen
     to run checks on the move.</p>
     <p class="note">Scoring is weighted by business type. A dentist is judged on
@@ -514,7 +557,7 @@ def paid_page(key: str, credits: int, base_url: str) -> str:
     <p class="eyebrow">Payment received</p>
     <h1 class="display">Your scan key</h1>
     <p class="lede">Keep this somewhere safe. It is the only thing that spends
-    your credits, and this page is the only place it is shown.</p>
+    your credits. You can reopen this page from your receipt link at any time.</p>
 
     <p style="font:16px var(--mono); background:#ffffff12; border:1px solid var(--line);
               border-radius:12px; padding:18px; word-break:break-all; margin-top:26px;">
@@ -522,9 +565,13 @@ def paid_page(key: str, credits: int, base_url: str) -> str:
     </p>
     <p class="note">{credits} scan credit{"" if credits == 1 else "s"} available.</p>
 
-    <p class="lede" style="margin-top:30px">Paste it into the app under
-    <a href="/app">Scan key</a>, or add <code>&amp;key=…</code> to an
-    <code>/api/scan</code> request.</p>
+    <p class="lede" style="margin-top:30px"><a href="/app" id="open">Open the app</a>.
+    This device has been set up automatically: the key is saved here, so the app
+    will use it without pasting. On another device, paste the key into the app
+    under <em>Scan key</em>.</p>
     <p class="note">If the credit count reads 0, Stripe's confirmation is still
     in flight. Reload in a few seconds — this link stays valid.</p>
+    <script>
+    try {{ localStorage.setItem('surfaced.key', {json.dumps(key)}); }} catch (e) {{}}
+    </script>
   </main>"""))
