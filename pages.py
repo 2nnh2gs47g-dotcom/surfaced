@@ -67,11 +67,11 @@ def error_page(heading: str, message: str, base_url: str) -> str:
 
 def landing_page(base_url: str) -> str:
     return (
-        _SHELL.replace("{{TITLE}}", "Surfaced — will AI assistants find and quote your website?")
+        _SHELL.replace("{{TITLE}}", "Surfaced — get recommended by ChatGPT, Claude, Gemini and Perplexity")
         .replace(
             "{{DESCRIPTION}}",
-            "Surfaced checks whether ChatGPT, Claude, Gemini and Perplexity can reach, read and "
-            "quote your site, then lists the fixes in priority order. Free check, no signup; full report $19.99.",
+            "More customers now ask AI who to choose. Surfaced checks whether ChatGPT, Claude, Gemini "
+            "and Perplexity can read and trust your website. Free score in 10 seconds; full report with fixes $19.99.",
         )
         .replace("{{BASE_URL}}", base_url)
         .replace("{{SCHEMA}}", _SCHEMA)
@@ -131,14 +131,14 @@ _SHELL = """<!DOCTYPE html>
   .brand { font:700 15px/1 var(--mono); letter-spacing:.14em; text-transform:uppercase; }
   .brand span { color:var(--cyan); }
 
-  .hero { padding:76px 0 56px; }
+  .hero { padding-top:76px; padding-bottom:56px; }
 
   .scanbox {
-    display:flex; gap:10px; margin-top:34px; max-width:560px;
+    display:flex; gap:10px; margin-top:34px; max-width:780px;
     background:#ffffff12; border:1px solid var(--line); border-radius:15px; padding:9px;
   }
   .scanbox input {
-    flex:1; min-width:0; background:transparent; border:none; outline:none;
+    flex:1 1 240px; min-width:0; background:transparent; border:none; outline:none;
     color:var(--paper); font:17px var(--sans); padding:11px 13px;
   }
   .scanbox input::placeholder { color:#8d89b3; }
@@ -225,6 +225,21 @@ _SHELL = """<!DOCTYPE html>
   table.compare td { color:var(--muted); }
   table.compare td:first-child { color:var(--paper); width:34%; }
 
+  .asks { list-style:none; padding:0; margin:22px 0; display:flex; flex-wrap:wrap; gap:10px; }
+  .asks li { border:1px solid var(--line); border-radius:99px; padding:9px 16px; background:#ffffff0a;
+    color:var(--paper); font-size:15px; }
+  .reasons { grid-template-columns:repeat(2, minmax(0, 1fr)) !important; }
+  @media (max-width:640px) { .reasons { grid-template-columns:1fr !important; } }
+  .reasons, .who { list-style:none; padding:0; margin:26px 0 0; display:grid; gap:14px;
+    grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); }
+  .reasons li, .who li { border:1px solid var(--line); border-radius:14px; padding:20px; background:#ffffff08; }
+  .reasons h3, .who h3 { margin:0 0 8px; font-size:16px; color:var(--paper); }
+  .reasons p, .who p { margin:0; font-size:14.5px; color:var(--muted); }
+  .who p { font-style:italic; }
+  .closing h2 { font-size:clamp(26px, 4vw, 38px); }
+  a.cta { display:inline-block; text-decoration:none; font:600 16px var(--sans); padding:14px 24px;
+    border-radius:12px; background:var(--amber); color:#1a1530; }
+  a.cta:hover { color:#1a1530; filter:brightness(1.05); }
   .faq dt { font-weight:600; margin-top:26px; }
   .faq dd { margin:8px 0 0; color:var(--muted); max-width:64ch; }
 
@@ -237,7 +252,7 @@ _SHELL = """<!DOCTYPE html>
   :focus-visible { outline:2px solid var(--cyan); outline-offset:3px; border-radius:4px; }
 
   @media (max-width:760px) {
-    .hero { padding:52px 0 40px; }
+    .hero { padding-top:52px; padding-bottom:40px; }
     .scanbox { flex-direction:column; }
     .scanbox button, .scanbox select { width:100%; max-width:none; }
     .readout li { grid-template-columns:1fr auto; }
@@ -296,33 +311,28 @@ _SCHEMA = """<script type="application/ld+json">
       "mainEntity": [
         {
           "@type": "Question",
-          "name": "What is generative engine optimization?",
-          "acceptedAnswer": { "@type": "Answer", "text":
-            "Generative engine optimization is the practice of structuring a website so AI assistants can reach it, read it, and quote it. Where SEO competes for a ranked link, GEO competes to be the source an assistant cites inside its answer." }
+          "name": "Do I need to be technical?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No. The score and the four areas are explained in plain English. The full report is written so you can follow it yourself or hand it straight to whoever manages your website." }
         },
         {
           "@type": "Question",
-          "name": "Does Surfaced work if my site is built with React or another JavaScript framework?",
-          "acceptedAnswer": { "@type": "Answer", "text":
-            "Yes, and that is often where it finds the biggest problem. Surfaced reads the raw HTML with no JavaScript executed, the same way most AI citation crawlers do. If your content only appears after JavaScript runs, the scan will show you how little a crawler actually sees." }
+          "name": "Is the check really free?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Yes. The score out of 100 and the four-area breakdown are free, with no signup. The full report, with the comparison and every fix, is a one-time $19.99 purchase." }
         },
         {
           "@type": "Question",
-          "name": "Do I need an account to run a check?",
-          "acceptedAnswer": { "@type": "Answer", "text":
-            "No. Paste a public URL and you get the full report immediately, including every score, the crawler access table and the prioritised fix list. There is no signup and no email required." }
+          "name": "Will this guarantee that ChatGPT recommends me?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No tool can promise that, and you should be wary of any that does. What Surfaced does is find the things that stop AI from reading and trusting your website, and show you how to fix them, so you have a fair chance of being named." }
         },
         {
           "@type": "Question",
-          "name": "Where do the review and social scores come from?",
-          "acceptedAnswer": { "@type": "Answer", "text":
-            "From what your own site declares: schema.org review markup, a linked Google Business Profile, Open Graph tags and sameAs entity links. Those are the signals AI engines actually read. Surfaced does not scrape Google or Meta." }
+          "name": "Do you change anything on my website?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No. Surfaced only reads your public pages, the same way an AI tool would. Nothing is installed and nothing is changed." }
         },
         {
           "@type": "Question",
-          "name": "Can I use the results in my own dashboard?",
-          "acceptedAnswer": { "@type": "Answer", "text":
-            "Yes. Every check is also available as JSON at /api/scan with an open CORS policy, so you can call it from a static site, a spreadsheet script or your own reporting stack." }
+          "name": "How do I get back to my report later?",
+          "acceptedAnswer": { "@type": "Answer", "text": "After you buy, we email you a link that opens your reports directly. You can also save any report as a PDF." }
         }
       ]
     }
@@ -338,27 +348,28 @@ _BODY = """
 
 <main>
   <div class="wrap hero">
-    <p class="eyebrow">AI visibility check</p>
-    <h1 class="display">Will AI assistants find, trust and <em>quote</em> your website?</h1>
-    <p class="lede">Paste any public address. Surfaced fetches it the way a crawler
-    does, scores what it finds, and tells you what to fix first.</p>
+    <p class="eyebrow">Be found by AI</p>
+    <h1 class="display">Your next customer probably won't find you on <em>Google</em>.</h1>
+    <p class="lede">More and more people ask ChatGPT, Claude, Gemini or Perplexity for a
+    recommendation. The answer is short, often just two or three names. Find out in
+    about ten seconds whether your website gives AI a reason to name you.</p>
 
     <form class="scanbox" action="/scan" method="get">
-      <label class="visually-hidden" for="url">Website address</label>
-      <input id="url" name="url" type="text" placeholder="yourwebsite.com" autofocus required>
-      <label class="visually-hidden" for="vertical">Business type</label>
+      <label class="visually-hidden" for="url">Your website address</label>
+      <input id="url" name="url" type="text" placeholder="yourbusiness.com" autofocus required>
+      <label class="visually-hidden" for="vertical">Type of business</label>
       <select id="vertical" name="vertical">
-        <option value="">Detect business type</option>
-        <option value="local">Local / in-person business</option>
-        <option value="services">Professional services firm</option>
+        <option value="">Business type: auto</option>
+        <option value="local">Restaurant, shop, practice or local service</option>
+        <option value="services">Professional or creative services</option>
         <option value="ecommerce">Online store</option>
-        <option value="saas">Software / B2B product</option>
-        <option value="publisher">Publisher / content site</option>
-        <option value="general">General business</option>
+        <option value="saas">Software or tech company</option>
+        <option value="publisher">Blog, media or content site</option>
+        <option value="general">Something else</option>
       </select>
-      <button type="submit">Run the check</button>
+      <button type="submit">Check my website</button>
     </form>
-    <p class="note">Free &middot; no signup &middot; results in about 10 seconds</p>
+    <p class="note">Free &middot; no signup &middot; about 10 seconds</p>
 
     <div class="price">
       <div>
@@ -366,17 +377,18 @@ _BODY = """
         <p class="price-row"><s class="price-was" aria-label="Regular price $49.99">$49.99</s>
           <span class="price-now">$19.99</span>
           <span class="price-tag">Introductory offer</span></p>
-        <p class="price-sub">The free check shows your grade and four scores. The full report adds
-        every fix in priority order, the score breakdown and AI crawler access.
-        No subscription.</p>
+        <p class="price-sub">The free check gives you a score out of 100 and how you do in four
+        key areas. The full report shows how you compare with similar businesses and gives you a
+        prioritised list of fixes, with step-by-step instructions your team or web designer can
+        act on right away. Save it as a PDF. No subscription.</p>
       </div>
       <button type="button" id="buy" class="price-buy">Get the full report</button>
       <p id="buymsg" class="price-sub" aria-live="polite"></p>
     </div>
-    <p class="note">Already bought a report? <a href="/reports">Reopen it with your scan key</a>.</p>
+    <p class="note">Already bought a report? <a href="/reports">Open it here</a>.</p>
     <script>
     document.getElementById('buy').addEventListener('click', async function () {
-      var m = document.getElementById('buymsg'); m.textContent = 'Opening checkout\u2026';
+      var m = document.getElementById('buymsg'); m.textContent = 'Opening checkout\\u2026';
       try {
         var r = await fetch('/api/checkout', {method: 'POST'});
         var d = await r.json();
@@ -385,105 +397,86 @@ _BODY = """
       } catch (e) { m.textContent = 'Could not reach checkout. Try again.'; }
     });
     </script>
-    <p class="note"><a href="/app">Open the app</a> &mdash; add it to your phone's home screen
-    to run checks on the move.</p>
-    <p class="note">Scoring is weighted by business type. A dentist is judged on
-    Google reviews; a SaaS product isn't.</p>
-  </div>
-
-  <div class="wrap">
-    <div class="readout">
-      <div class="readout-head">
-        <span>The crawlers that decide whether you exist</span>
-        <span>robots.txt</span>
-      </div>
-      <ul>
-        <li><span class="bot">OAI-SearchBot</span><span class="role">Builds the ChatGPT search index</span><span class="status reads">Cites you</span></li>
-        <li><span class="bot">Claude-SearchBot</span><span class="role">Builds the Claude search index</span><span class="status reads">Cites you</span></li>
-        <li><span class="bot">PerplexityBot</span><span class="role">Builds the Perplexity index</span><span class="status reads">Cites you</span></li>
-        <li><span class="bot">Google-Extended</span><span class="role">Gemini training and grounding</span><span class="status trains">Trains only</span></li>
-        <li><span class="bot">GPTBot</span><span class="role">OpenAI model training</span><span class="status trains">Trains only</span></li>
-      </ul>
-    </div>
-    <p class="note">Blocking the first three removes you from AI answers. Most sites
-    block them by accident, in one line of robots.txt.</p>
   </div>
 
   <section class="band">
     <div class="wrap">
-      <h2>What does Surfaced actually check?</h2>
-      <p>Every scan fetches your page without running JavaScript, reads your
-      robots.txt bot by bot, and parses the structured data an engine would rely on.
-      It then scores four dimensions and ranks the gaps by how much each one costs
-      you in AI answers.</p>
-      <ul class="pillars">
-        <li>
-          <h3>GEO</h3>
-          <p>Can crawlers reach the page, read real text in the raw HTML, and see
-          signals of trust like bylines, dates and cited sources?</p>
-        </li>
-        <li>
-          <h3>AEO</h3>
-          <p>Is the content shaped like an answer? Question headings, self-contained
-          sections, schema markup and paragraphs short enough to lift verbatim.</p>
-        </li>
-        <li>
-          <h3>Reviews</h3>
-          <p>Do engines find proof? Review schema, visible testimonials and a linked
-          Google Business Profile they can tie back to your brand.</p>
-        </li>
-        <li>
-          <h3>Social</h3>
-          <p>Is your footprint declared? sameAs entity links and presence on the
-          platforms AI answers cite most: YouTube, LinkedIn and Reddit.</p>
-        </li>
+      <h2>People are asking AI who to hire, where to eat and what to buy.</h2>
+      <p>Questions like these are typed into AI assistants every day:</p>
+      <ul class="asks">
+        <li>&ldquo;What's the best daycare near me?&rdquo;</li>
+        <li>&ldquo;Who caters a 40-person office lunch nearby?&rdquo;</li>
+        <li>&ldquo;Recommend a wedding photographer in my area.&rdquo;</li>
+        <li>&ldquo;Good Italian restaurant for a family dinner tonight?&rdquo;</li>
+        <li>&ldquo;Which CRM suits a 20-person team?&rdquo;</li>
+        <li>&ldquo;Who's a reliable IT partner for a small firm?&rdquo;</li>
+      </ul>
+      <p><strong>The AI gives a short answer, often just two or three names.</strong> If your
+      website isn't built so AI can read it and trust it, you aren't one of them, however good
+      you are at what you do.</p>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <h2>Traditional SEO wasn't designed for this. Surfaced was.</h2>
+      <p>Google shows a list of links and lets people choose. An AI assistant reads a few
+      websites itself and decides who to mention. A site can rank well on Google and still be
+      skipped by AI, usually for one of four reasons:</p>
+      <ul class="reasons">
+        <li><h3>AI can't get in</h3>
+        <p>Many websites block AI tools by accident, through a single setting that nobody
+        remembers turning on.</p></li>
+        <li><h3>AI can't read it</h3>
+        <p>Some sites show text to people but hand AI tools an almost empty page.</p></li>
+        <li><h3>AI can't tell what you do</h3>
+        <p>What you offer, where, for whom and how to reach you isn't stated in a way AI can
+        pick up with confidence.</p></li>
+        <li><h3>AI can't find proof</h3>
+        <p>Reviews, testimonials and your profiles elsewhere aren't connected to your site,
+        so AI has no evidence that customers rate you.</p></li>
       </ul>
     </div>
   </section>
 
   <section class="band">
     <div class="wrap">
-      <h2>Why doesn't traditional SEO cover this?</h2>
-      <p>SEO earns a ranked link that a person chooses to click. An AI assistant
-      never shows that list. It reads a handful of sources, synthesises one answer,
-      and names whoever it trusted. Ranking well helps, but it no longer decides
-      whether you appear.</p>
-      <table class="compare">
-        <tr><th>What changes</th><th>Traditional SEO</th><th>AI visibility</th></tr>
-        <tr><td>The goal</td><td>Rank above competitors</td><td>Be the source that gets quoted</td></tr>
-        <tr><td>Who reads the page</td><td>A browser that runs JavaScript</td><td>A crawler that usually does not</td></tr>
-        <tr><td>What gets extracted</td><td>The whole page</td><td>One self-contained section</td></tr>
-        <tr><td>Access control</td><td>Googlebot in robots.txt</td><td>Six separate citation bots</td></tr>
-        <tr><td>Proof of quality</td><td>Backlinks</td><td>Schema, reviews, entity links</td></tr>
-      </table>
-      <p>The practical consequence is that a site can rank on page one and still be
-      invisible to an assistant, usually because its content never reaches the
-      crawler in readable form.</p>
-    </div>
-  </section>
-
-  <section class="band">
-    <div class="wrap">
-      <h2>How does the scan work?</h2>
-      <p>A scan takes about ten seconds and touches your site twice: once for the
-      page itself and once for robots.txt. Nothing is stored beyond an anonymous
-      score used to build peer benchmarks, and no crawling continues after the
-      report is generated.</p>
+      <h2>How does it work?</h2>
       <ol class="steps">
-        <li><strong>Fetch the raw HTML</strong>
-        Surfaced requests your page and reads exactly what comes back, with no
-        JavaScript executed and no rendering. This is the view most citation
-        crawlers get.</li>
-        <li><strong>Read robots.txt bot by bot</strong>
-        Each of the eleven AI crawlers is checked separately, because a rule that
-        allows Googlebot can still block Perplexity.</li>
-        <li><strong>Parse the signals</strong>
-        Headings, schema.org JSON-LD, Open Graph tags, review markup, outbound
-        references, alt text and paragraph shape.</li>
-        <li><strong>Score and rank the fixes</strong>
-        You get four scores out of 100 and a list of recommendations ordered by
-        impact, each one naming what was observed and what to change.</li>
+        <li><strong>Enter your web address</strong>
+        Any public website works, whether it was built on Wix, Squarespace, WordPress,
+        Shopify or by a developer.</li>
+        <li><strong>Surfaced checks your site the way AI tools do</strong>
+        In about ten seconds you get a score out of 100 and a breakdown across four key
+        areas: whether AI can find and trust you, whether your content answers customer
+        questions clearly, whether there's proof customers rate you, and how well your
+        presence elsewhere is linked. Free, no signup.</li>
+        <li><strong>Get the full report and fix what matters most</strong>
+        For $19.99 you see how you compare with similar businesses and get a prioritised
+        list of fixes. Each one says why it matters and how to do it, step by step, with
+        anything your web designer needs to copy and paste. Save it as a PDF and open it
+        again any time from the link we email you.</li>
       </ol>
+      <p class="note"><a href="#url">Check your website now &rarr;</a></p>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <h2>Who is Surfaced for?</h2>
+      <p>Any business that wins customers through recommendations. Your score is weighted by
+      the kind of business you run: a restaurant is judged differently from a software company.</p>
+      <ul class="who">
+        <li><h3>Restaurants &amp; caf&eacute;s</h3><p>&ldquo;Best brunch spot near me?&rdquo;</p></li>
+        <li><h3>Caterers &amp; event services</h3><p>&ldquo;Who caters weddings in my area?&rdquo;</p></li>
+        <li><h3>Photographers &amp; videographers</h3><p>&ldquo;Affordable family photographer nearby?&rdquo;</p></li>
+        <li><h3>Daycares &amp; schools</h3><p>&ldquo;Which daycare has the best reviews?&rdquo;</p></li>
+        <li><h3>Dentists, clinics &amp; local practices</h3><p>&ldquo;Family dentist taking new patients?&rdquo;</p></li>
+        <li><h3>Salons, spas &amp; fitness</h3><p>&ldquo;Good hair salon for curly hair?&rdquo;</p></li>
+        <li><h3>Contractors &amp; home services</h3><p>&ldquo;Reliable plumber who comes same day?&rdquo;</p></li>
+        <li><h3>B2B &amp; professional firms</h3><p>&ldquo;Accountant who specialises in small businesses?&rdquo;</p></li>
+        <li><h3>Small tech &amp; software companies</h3><p>&ldquo;Best scheduling tool for a clinic?&rdquo;</p></li>
+      </ul>
     </div>
   </section>
 
@@ -491,51 +484,42 @@ _BODY = """
     <div class="wrap">
       <h2>Common questions</h2>
       <dl class="faq">
-        <dt>What is generative engine optimization?</dt>
-        <dd>Generative engine optimization is the practice of structuring a website
-        so AI assistants can reach it, read it, and quote it. Where SEO competes for
-        a ranked link, GEO competes to be the source an assistant cites inside its
-        answer.</dd>
-
-        <dt>Does Surfaced work if my site is built with React or another JavaScript framework?</dt>
-        <dd>Yes, and that is often where it finds the biggest problem. Surfaced reads
-        the raw HTML with no JavaScript executed, the same way most AI citation
-        crawlers do. If your content only appears after JavaScript runs, the scan
-        shows you how little a crawler actually sees.</dd>
-
-        <dt>Do I need an account to run a check?</dt>
-        <dd>No. Paste a public URL and you get the full report immediately, including
-        every score, the crawler access table and the prioritised fix list. There is
-        no signup and no email required.</dd>
-
-        <dt>Where do the review and social scores come from?</dt>
-        <dd>From what your own site declares: schema.org review markup, a linked
-        Google Business Profile, Open Graph tags and sameAs entity links. Those are
-        the signals AI engines actually read. Surfaced does not scrape Google or
-        Meta.</dd>
-
-        <dt>Can I use the results in my own dashboard?</dt>
-        <dd>Yes. Every check is also available as JSON at
-        <a href="/api/scan?url=example.com"><code>/api/scan</code></a> with an open
-        CORS policy, so you can call it from a static site, a spreadsheet script or
-        your own reporting stack.</dd>
+        <dt>Do I need to be technical?</dt>
+        <dd>No. The score and the four areas are explained in plain English. The full report is
+        written so you can follow it yourself or hand it straight to whoever manages your
+        website.</dd>
+        <dt>Is the check really free?</dt>
+        <dd>Yes. The score out of 100 and the four-area breakdown are free, with no signup. The
+        full report, with the comparison and every fix, is a one-time $19.99 purchase.</dd>
+        <dt>Will this guarantee that ChatGPT recommends me?</dt>
+        <dd>No tool can promise that, and you should be wary of any that does. What Surfaced
+        does is find the things that stop AI from reading and trusting your website, and show
+        you how to fix them, so you have a fair chance of being named.</dd>
+        <dt>Do you change anything on my website?</dt>
+        <dd>No. Surfaced only reads your public pages, the same way an AI tool would. Nothing
+        is installed and nothing is changed.</dd>
+        <dt>How do I get back to my report later?</dt>
+        <dd>After you buy, we email you a link that opens your reports directly. You can also
+        save any report as a PDF.</dd>
       </dl>
+    </div>
+  </section>
+
+  <section class="band closing">
+    <div class="wrap">
+      <h2>Being recommended by AI is the new front page.</h2>
+      <p>Whether you run a restaurant, a photography studio, a daycare, a local practice, a B2B
+      firm or a small tech company, Surfaced shows you what's keeping you off it, and how to
+      fix it.</p>
+      <p style="margin-top:22px"><a class="cta" href="#url">Check my website free</a></p>
     </div>
   </section>
 </main>
 
 <footer class="site">
   <div class="wrap">
-    <p>Surfaced reads pages the way AI crawlers do: raw HTML, no JavaScript.
-    Last updated <time datetime="2026-07-28">28 July 2026</time>.</p>
-    <p>Further reading:
-      <a href="https://arxiv.org/abs/2311.09735">the original GEO research paper</a> &middot;
-      <a href="https://platform.openai.com/docs/bots">OpenAI crawler documentation</a> &middot;
-      <a href="https://developers.google.com/search/docs/crawling-indexing/overview-google-crawlers">Google crawler reference</a> &middot;
-      <a href="https://schema.org/FAQPage">schema.org FAQPage</a> &middot;
-      <a href="https://llmstxt.org/">the llms.txt proposal</a>
-    </p>
-    <p><a href="/app">App</a> &middot; <a href="/llms.txt">llms.txt</a> &middot; <a href="/robots.txt">robots.txt</a> &middot; <a href="/health">status</a></p>
+    <p>Surfaced, by PatnAIQ &middot; <a href="mailto:surfaced@patnaiq.com">surfaced@patnaiq.com</a></p>
+    <p><a href="/reports">My reports</a> &middot; <a href="/app">App</a> &middot; <a href="/llms.txt">llms.txt</a> &middot; <a href="/health">Status</a></p>
   </div>
 </footer>"""
 
@@ -638,7 +622,7 @@ def reports_page(base_url: str) -> str:
         var when = x.checked ? new Date(x.checked * 1000).toLocaleDateString(undefined, {year:'numeric', month:'short', day:'numeric'}) : '';
         return '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:14px 0;border-top:1px solid var(--line)">' +
           '<div style="flex:1;min-width:200px"><strong>' + esc(x.title || x.url) + '</strong><br>' +
-          '<span class="note" style="margin:0">' + esc(String(x.url).replace(/^https?:\/\//, '')) + ' &middot; ' + esc(when) +
+          '<span class="note" style="margin:0">' + esc(String(x.url).replace(/^https?:\\/\\//, '')) + ' &middot; ' + esc(when) +
           (x.score != null ? ' &middot; ' + esc(x.score) + '/100, grade ' + esc(x.grade) : '') + '</span></div>' +
           (x.available ? '<button type="button" data-id="' + esc(x.id) + '" class="openbtn" style="font:600 14px inherit;padding:10px 16px;border-radius:10px;border:0;background:var(--amber);color:#1a1530;cursor:pointer">Open report</button>'
                        : '<span class="note" style="margin:0">Not stored</span>') + '</div>';
